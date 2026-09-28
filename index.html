@@ -2490,14 +2490,49 @@
   })();
 
 </script>
-  <!-- کدهای جدید هوشمندسازی فاکتور و فیش هورنو -->
+ <!-- کدهای نهایی یکپارچه‌ساز ابری و هوشمند هورنو -->
 <script>
-  // این تابع جایگزین تابع قبلی می‌شود و کل فیلدها را خودکار پر می‌کند
-  window.autoParseInputs = function() {
+  // ۱. دریافت زنده اطلاعات از فایربیس (سینک آنی گوشی و سیستم)
+  if (window.firebaseInitialized) {
+    const ordersRef = window.dbRef(window.database, 'hourno_orders');
+    window.dbOnValue(ordersRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        orders = Object.keys(data).map(key => ({ id: key, ...data[key] }));
+      } else {
+        orders = [];
+      }
+      if (typeof renderTable === 'function') renderTable();
+      if (typeof updateKPIs === 'function') updateKPIs();
+    });
+  }
+
+  // ۲. جایگزینی تابع ذخیره آفلاین با ذخیره آنلاین ابری
+  saveOrdersToLocal = function() {
+    if (window.firebaseInitialized) {
+      const ordersRef = window.dbRef(window.database, 'hourno_orders');
+      const obj = {};
+      orders.forEach((o, index) => {
+        const id = o.id || 'order_' + Date.now() + '_' + index;
+        o.id = id;
+        const copy = {...o};
+        delete copy.id;
+        obj[id] = copy;
+      });
+      window.dbSet(ordersRef, obj);
+    }
+    // نسخه بکاپ محلی
+    try {
+      localStorage.setItem('hourno_orders_dashboard_data', JSON.stringify(orders));
+    } catch (e) {}
+  };
+
+  // ۳. استخراج تمام‌خودکار و هوشمند فیش و فاکتور
+  autoParseInputs = function() {
     const inv = document.getElementById('rawInvoiceText').value.trim();
     const rec = document.getElementById('rawReceiptText').value.trim();
     
-    // --- ۱. پردازش هوشمند فاکتور متنی ---
+    // پردازش فاکتور
     if (inv) {
       const lines = inv.split('\n');
       lines.forEach(l => {
@@ -2510,31 +2545,26 @@
           if (parts[1]) document.getElementById('mCustPhone').value = parts[1].trim();
         }
       });
-      // استخراج هوشمند مبلغ کل فاکتور (اعداد طولانی)
       const numbers = inv.replace(/,/g, '').match(/\d{5,}/g);
       if (numbers && numbers.length > 0) {
         document.getElementById('mTotal').value = numbers[numbers.length - 1];
       }
     }
 
-    // --- ۲. پردازش هوشمند فیش و رسید بانکی (جدید) ---
+    // پردازش رسید واریزی
     if (rec) {
-      // حذف کاما و ریال/تومان برای استخراج دقیق‌تر اعداد
       const cleanRec = rec.replace(/,/g, '');
       const numbers = cleanRec.replace(/[^\d]/g, ' ').trim().split(/\s+/);
       
-      // استخراج مبلغ واریزی (معمولاً اعداد بالای ۴ رقم در رسید)
       const validAmounts = numbers.filter(n => n.length >= 4);
       if (validAmounts.length > 0) {
         document.getElementById('mDeposit').value = validAmounts[validAmounts.length - 1];
       }
 
-      // استخراج دقیق شماره پیگیری، ارجاع یا تراکنش
       const refMatch = cleanRec.match(/(?:پیگیری|شماره|کد|ارجاع|تراکنش).*?(\d{6,})/);
       if (refMatch) {
         document.getElementById('mRef').value = refMatch[1];
       } else {
-        // جستجوی خط به خط برای پیدا کردن شماره پیگیری
         const lines = rec.split('\n');
         lines.forEach(l => {
           if (l.includes('پیگیری') || l.includes('ارجاع')) {
@@ -2546,7 +2576,6 @@
         });
       }
 
-      // تشخیص خودکار نام بانک واریزی از روی متن
       const textRec = rec.toLowerCase();
       const banks = ['ملت', 'ملی', 'سامان', 'پاسارگاد', 'تجارت', 'صادرات', 'سپه', 'کشاورزی', 'مهر', 'رسالت', 'شهر', 'آینده', 'رفاه', 'مسکن', 'پارسیان'];
       let foundBank = false;
@@ -2560,12 +2589,9 @@
       if(!foundBank) document.getElementById('mBank').value = 'نامشخص';
     }
 
-    // بروزرسانی مانده حساب پس از استخراج خودکار
     if(typeof calcBalance === 'function') calcBalance();
-    
     alert('استخراج موفق! مبلغ واریزی، بانک و شماره پیگیری به صورت خودکار جای‌گذاری شدند.');
   };
 </script>
-
 </body>
 </html>
