@@ -2490,5 +2490,82 @@
   })();
 
 </script>
+  <!-- کدهای جدید هوشمندسازی فاکتور و فیش هورنو -->
+<script>
+  // این تابع جایگزین تابع قبلی می‌شود و کل فیلدها را خودکار پر می‌کند
+  window.autoParseInputs = function() {
+    const inv = document.getElementById('rawInvoiceText').value.trim();
+    const rec = document.getElementById('rawReceiptText').value.trim();
+    
+    // --- ۱. پردازش هوشمند فاکتور متنی ---
+    if (inv) {
+      const lines = inv.split('\n');
+      lines.forEach(l => {
+        if (l.includes('نام') || l.includes('مشتری')) {
+          const parts = l.split(':');
+          if (parts[1]) document.getElementById('mCustName').value = parts[1].trim();
+        }
+        if (l.includes('تماس') || l.includes('تلفن')) {
+          const parts = l.split(':');
+          if (parts[1]) document.getElementById('mCustPhone').value = parts[1].trim();
+        }
+      });
+      // استخراج هوشمند مبلغ کل فاکتور (اعداد طولانی)
+      const numbers = inv.replace(/,/g, '').match(/\d{5,}/g);
+      if (numbers && numbers.length > 0) {
+        document.getElementById('mTotal').value = numbers[numbers.length - 1];
+      }
+    }
+
+    // --- ۲. پردازش هوشمند فیش و رسید بانکی (جدید) ---
+    if (rec) {
+      // حذف کاما و ریال/تومان برای استخراج دقیق‌تر اعداد
+      const cleanRec = rec.replace(/,/g, '');
+      const numbers = cleanRec.replace(/[^\d]/g, ' ').trim().split(/\s+/);
+      
+      // استخراج مبلغ واریزی (معمولاً اعداد بالای ۴ رقم در رسید)
+      const validAmounts = numbers.filter(n => n.length >= 4);
+      if (validAmounts.length > 0) {
+        document.getElementById('mDeposit').value = validAmounts[validAmounts.length - 1];
+      }
+
+      // استخراج دقیق شماره پیگیری، ارجاع یا تراکنش
+      const refMatch = cleanRec.match(/(?:پیگیری|شماره|کد|ارجاع|تراکنش).*?(\d{6,})/);
+      if (refMatch) {
+        document.getElementById('mRef').value = refMatch[1];
+      } else {
+        // جستجوی خط به خط برای پیدا کردن شماره پیگیری
+        const lines = rec.split('\n');
+        lines.forEach(l => {
+          if (l.includes('پیگیری') || l.includes('ارجاع')) {
+            const parts = l.split(/[:\-]/);
+            if (parts.length > 1) {
+                document.getElementById('mRef').value = parts[parts.length - 1].trim().replace(/[^\d]/g, '');
+            }
+          }
+        });
+      }
+
+      // تشخیص خودکار نام بانک واریزی از روی متن
+      const textRec = rec.toLowerCase();
+      const banks = ['ملت', 'ملی', 'سامان', 'پاسارگاد', 'تجارت', 'صادرات', 'سپه', 'کشاورزی', 'مهر', 'رسالت', 'شهر', 'آینده', 'رفاه', 'مسکن', 'پارسیان'];
+      let foundBank = false;
+      for (let b of banks) {
+        if (textRec.includes(b)) {
+          document.getElementById('mBank').value = b;
+          foundBank = true;
+          break;
+        }
+      }
+      if(!foundBank) document.getElementById('mBank').value = 'نامشخص';
+    }
+
+    // بروزرسانی مانده حساب پس از استخراج خودکار
+    if(typeof calcBalance === 'function') calcBalance();
+    
+    alert('استخراج موفق! مبلغ واریزی، بانک و شماره پیگیری به صورت خودکار جای‌گذاری شدند.');
+  };
+</script>
+
 </body>
 </html>
