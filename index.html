@@ -2490,26 +2490,29 @@
   })();
 
 </script>
- <!-- کدهای نهایی یکپارچه‌ساز ابری و هوشمند هورنو -->
 <script>
-  // ۱. دریافت زنده اطلاعات از فایربیس (سینک آنی گوشی و سیستم)
-  if (window.firebaseInitialized) {
-    const ordersRef = window.dbRef(window.database, 'hourno_orders');
-    window.dbOnValue(ordersRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        orders = Object.keys(data).map(key => ({ id: key, ...data[key] }));
-      } else {
-        orders = [];
-      }
-      if (typeof renderTable === 'function') renderTable();
-      if (typeof updateKPIs === 'function') updateKPIs();
-    });
+  // ۱. خواندن آنلاین و زنده از فایربیس (سینک شدن آنی گوشی و کامپیوتر)
+  function initFirebaseSync() {
+    if (window.firebaseInitialized && window.database) {
+      const ordersRef = window.dbRef(window.database, 'hourno_orders');
+      window.dbOnValue(ordersRef, (snapshot) => {
+        const data = snapshot.val();
+        if (data) {
+          orders = Object.keys(data).map(key => ({ id: key, ...data[key] }));
+        }
+        if (typeof updateKPIs === 'function') updateKPIs();
+        if (typeof renderTable === 'function') renderTable();
+      });
+    } else {
+      setTimeout(initFirebaseSync, 300);
+    }
   }
+  initFirebaseSync();
 
-  // ۲. جایگزینی تابع ذخیره آفلاین با ذخیره آنلاین ابری
-  saveOrdersToLocal = function() {
-    if (window.firebaseInitialized) {
+  // ۲. جایگزین کردن تابع اصلی برنامه برای ارسال مستقیم به فایربیس
+  window.saveAndRefresh = function() {
+    // ارسال مستقیم به دیتابیس ابری
+    if (window.firebaseInitialized && window.database) {
       const ordersRef = window.dbRef(window.database, 'hourno_orders');
       const obj = {};
       orders.forEach((o, index) => {
@@ -2521,18 +2524,22 @@
       });
       window.dbSet(ordersRef, obj);
     }
-    // نسخه بکاپ محلی
+
+    // بکاپ در حافظه محلی
     try {
       localStorage.setItem('hourno_orders_dashboard_data', JSON.stringify(orders));
     } catch (e) {}
+
+    // به‌روزرسانی کارت‌ها و جدول
+    if (typeof updateKPIs === 'function') updateKPIs();
+    if (typeof renderTable === 'function') renderTable();
   };
 
-  // ۳. استخراج تمام‌خودکار و هوشمند فیش و فاکتور
-  autoParseInputs = function() {
+  // ۳. استخراج هوشمند متن فاکتور و فیش
+  window.autoParseInputs = function() {
     const inv = document.getElementById('rawInvoiceText').value.trim();
     const rec = document.getElementById('rawReceiptText').value.trim();
     
-    // پردازش فاکتور
     if (inv) {
       const lines = inv.split('\n');
       lines.forEach(l => {
@@ -2551,11 +2558,9 @@
       }
     }
 
-    // پردازش رسید واریزی
     if (rec) {
       const cleanRec = rec.replace(/,/g, '');
       const numbers = cleanRec.replace(/[^\d]/g, ' ').trim().split(/\s+/);
-      
       const validAmounts = numbers.filter(n => n.length >= 4);
       if (validAmounts.length > 0) {
         document.getElementById('mDeposit').value = validAmounts[validAmounts.length - 1];
@@ -2564,33 +2569,20 @@
       const refMatch = cleanRec.match(/(?:پیگیری|شماره|کد|ارجاع|تراکنش).*?(\d{6,})/);
       if (refMatch) {
         document.getElementById('mRef').value = refMatch[1];
-      } else {
-        const lines = rec.split('\n');
-        lines.forEach(l => {
-          if (l.includes('پیگیری') || l.includes('ارجاع')) {
-            const parts = l.split(/[:\-]/);
-            if (parts.length > 1) {
-                document.getElementById('mRef').value = parts[parts.length - 1].trim().replace(/[^\d]/g, '');
-            }
-          }
-        });
       }
 
       const textRec = rec.toLowerCase();
       const banks = ['ملت', 'ملی', 'سامان', 'پاسارگاد', 'تجارت', 'صادرات', 'سپه', 'کشاورزی', 'مهر', 'رسالت', 'شهر', 'آینده', 'رفاه', 'مسکن', 'پارسیان'];
-      let foundBank = false;
       for (let b of banks) {
         if (textRec.includes(b)) {
           document.getElementById('mBank').value = b;
-          foundBank = true;
           break;
         }
       }
-      if(!foundBank) document.getElementById('mBank').value = 'نامشخص';
     }
 
     if(typeof calcBalance === 'function') calcBalance();
-    alert('استخراج موفق! مبلغ واریزی، بانک و شماره پیگیری به صورت خودکار جای‌گذاری شدند.');
+    alert('استخراج موفق انجام شد!');
   };
 </script>
 </body>
