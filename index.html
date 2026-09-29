@@ -3743,5 +3743,408 @@
   window.hournoSyncOrderPatchToFirebase = syncOrderPatchToFirebase;
   window.hournoReplaceAllOrdersInFirebase = replaceAllOrdersInFirebase;
 </script>
+<!-- ===============================================================
+     HOURNO CONTROL CENTER
+     Configurable troubleshooting panel for parser / workflow issues.
+     Does not modify the core layout. Settings are stored locally on each device.
+     =============================================================== -->
+<style>
+  #hournoControlFab{
+    position:fixed;left:16px;bottom:16px;z-index:8000;width:48px;height:48px;border:0;
+    border-radius:50%;background:#0f172a;color:#fff;font-size:21px;cursor:pointer;
+    box-shadow:0 8px 24px rgba(15,23,42,.25);display:flex;align-items:center;justify-content:center
+  }
+  #hournoControlFab:hover{transform:translateY(-1px);background:#1e3a8a}
+  #hournoControlOverlay{display:none;position:fixed;inset:0;z-index:9000;background:rgba(15,23,42,.62);backdrop-filter:blur(5px);padding:16px;align-items:center;justify-content:center}
+  #hournoControlPanel{width:min(980px,100%);max-height:94vh;overflow:hidden;background:#fff;border-radius:16px;box-shadow:0 24px 80px rgba(0,0,0,.35);direction:rtl;display:flex;flex-direction:column;font-family:Tahoma,'Segoe UI',Arial,sans-serif}
+  .hc-head{padding:14px 18px;background:#0f172a;color:#fff;display:flex;align-items:center;justify-content:space-between;gap:12px}
+  .hc-title{font-weight:900;font-size:15px}.hc-sub{font-size:10px;color:#cbd5e1;margin-top:3px}
+  .hc-close{border:0;background:transparent;color:#fff;font-size:21px;cursor:pointer}
+  .hc-tabs{display:flex;gap:6px;padding:10px 12px;border-bottom:1px solid #e2e8f0;overflow:auto;white-space:nowrap}
+  .hc-tab{border:1px solid #cbd5e1;background:#fff;color:#475569;border-radius:7px;padding:7px 10px;font:600 11px Tahoma;cursor:pointer}
+  .hc-tab.active{background:#1e3a8a;color:#fff;border-color:#1e3a8a}
+  .hc-body{padding:14px;overflow:auto}
+  .hc-section{display:none}.hc-section.active{display:block}
+  .hc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+  .hc-card{border:1px solid #e2e8f0;border-radius:10px;padding:12px;background:#f8fafc}
+  .hc-card h4{font-size:12px;margin-bottom:8px;color:#0f172a}.hc-help{font-size:10.5px;color:#64748b;line-height:1.8;margin-bottom:8px}
+  .hc-input,.hc-textarea{width:100%;border:1px solid #cbd5e1;border-radius:7px;padding:8px 9px;font:12px Tahoma;outline:none;background:#fff}
+  .hc-input:focus,.hc-textarea:focus{border-color:#2563eb}.hc-textarea{min-height:110px;resize:vertical;line-height:1.8}
+  .hc-check{display:flex;align-items:center;gap:7px;margin:7px 0;font-size:11px;color:#334155}.hc-check input{width:16px;height:16px}
+  .hc-row{display:flex;gap:7px;flex-wrap:wrap;align-items:center}.hc-row>*{flex:0 0 auto}
+  .hc-btn{border:0;border-radius:7px;padding:8px 12px;font:700 11px Tahoma;cursor:pointer}.hc-blue{background:#1e3a8a;color:#fff}.hc-green{background:#047857;color:#fff}.hc-dark{background:#334155;color:#fff}.hc-red{background:#b91c1c;color:#fff}.hc-gray{background:#e2e8f0;color:#334155}
+  .hc-result{margin-top:9px;border:1px dashed #94a3b8;border-radius:8px;padding:9px;background:#fff;font-size:11px;line-height:1.9;white-space:pre-wrap}
+  .hc-ok{color:#047857;font-weight:800}.hc-warn{color:#b45309;font-weight:800}.hc-bad{color:#b91c1c;font-weight:800}
+  .hc-kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}.hc-kpi>div{border:1px solid #e2e8f0;border-radius:9px;padding:9px;background:#fff}.hc-kpi b{display:block;font-size:15px;color:#0f172a}.hc-kpi span{font-size:10px;color:#64748b}
+  .hc-code{background:#0f172a;color:#e2e8f0;border-radius:8px;padding:10px;font:11px Consolas,monospace;direction:ltr;text-align:left;overflow:auto}
+  @media(max-width:700px){#hournoControlFab{left:10px;bottom:10px;width:44px;height:44px}.hc-grid{grid-template-columns:1fr}.hc-kpi{grid-template-columns:repeat(2,1fr)}#hournoControlOverlay{padding:6px}.hc-head{padding:11px 13px}.hc-body{padding:10px}}
+</style>
+
+<button id="hournoControlFab" type="button" title="HOURNO Control Center">🔧</button>
+<div id="hournoControlOverlay">
+  <div id="hournoControlPanel">
+    <div class="hc-head">
+      <div><div class="hc-title">HOURNO CONTROL CENTER</div><div class="hc-sub">تعمیر و تست رفتار برنامه بدون دستکاری ظاهر اصلی</div></div>
+      <button class="hc-close" type="button" onclick="hournoControlClose()">✕</button>
+    </div>
+    <div class="hc-tabs">
+      <button class="hc-tab active" data-hctab="fix" type="button">⚡ رفع سریع</button>
+      <button class="hc-tab" data-hctab="invoice" type="button">🧾 تست فاکتور</button>
+      <button class="hc-tab" data-hctab="receipt" type="button">💳 تست رسید</button>
+      <button class="hc-tab" data-hctab="rules" type="button">⚙️ قوانین</button>
+      <button class="hc-tab" data-hctab="diag" type="button">🩺 عیب‌یابی</button>
+      <button class="hc-tab" data-hctab="versions" type="button">🕘 نسخه‌ها</button>
+    </div>
+    <div class="hc-body">
+      <section class="hc-section active" data-hcsection="fix">
+        <div class="hc-kpi">
+          <div><b id="hcFixCount">۲</b><span>اصلاح فعال</span></div>
+          <div><b id="hcCloudState">—</b><span>Firebase</span></div>
+          <div><b id="hcUserState">—</b><span>کاربر</span></div>
+          <div><b id="hcOrderCount">—</b><span>سفارش</span></div>
+        </div>
+        <div class="hc-grid">
+          <div class="hc-card">
+            <h4>رفع مشکل مبلغ نهایی فاکتور</h4>
+            <div class="hc-help">اول «جمع کل» یا «قابل پرداخت» را می‌خواند؛ اگر موجود نبود، از جمع پس از تخفیف + حمل محاسبه می‌کند. «جمع مبلغ سفارش» به تنهایی مبلغ نهایی محسوب نمی‌شود.</div>
+            <label class="hc-check"><input id="hcEnableInvoiceFix" type="checkbox"> فعال باشد</label>
+          </div>
+          <div class="hc-card">
+            <h4>رفع مشکل مبلغ واریزی رسید</h4>
+            <div class="hc-help">مبلغ فقط از برچسب‌های مبلغ/واریزی/پرداخت استخراج می‌شود و شماره پیگیری، شماره کارت و اعداد طولانی نباید جای مبلغ انتخاب شوند.</div>
+            <label class="hc-check"><input id="hcEnableReceiptFix" type="checkbox"> فعال باشد</label>
+          </div>
+          <div class="hc-card">
+            <h4>توضیح ایراد</h4>
+            <textarea id="hcIssueText" class="hc-textarea" placeholder="مثلاً: مبلغ فاکتور قبل از هزینه حمل را می‌گذارد و رسید را هم گاهی اشتباه می‌خواند."></textarea>
+            <div class="hc-row" style="margin-top:7px"><button class="hc-btn hc-blue" onclick="hournoAnalyzeIssue()">🔍 تحلیل و پیشنهاد اصلاح</button><span id="hcIssueStatus" class="hc-help"></span></div>
+          </div>
+          <div class="hc-card">
+            <h4>اعمال و ذخیره اصلاحات</h4>
+            <div class="hc-help">تنظیمات این پنل در همین مرورگر ذخیره می‌شوند تا دفعه بعد هم باقی بمانند.</div>
+            <div class="hc-row"><button class="hc-btn hc-green" onclick="hournoApplyControlConfig()">✅ اعمال اصلاحات</button><button class="hc-btn hc-gray" onclick="hournoResetControlConfig()">↺ بازگشت پیش‌فرض</button></div>
+            <div id="hcApplyStatus" class="hc-result">وضعیت: آماده</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="hc-section" data-hcsection="invoice">
+        <div class="hc-card">
+          <h4>متن واقعی فاکتور را اینجا تست کن</h4>
+          <div class="hc-help">این تست به فیلدهای سفارش دست نمی‌زند؛ فقط نشان می‌دهد برنامه کدام مبلغ را به‌عنوان مبلغ نهایی تشخیص می‌دهد.</div>
+          <textarea id="hcInvoiceTest" class="hc-textarea">نام مشتری: ۲۶ چیدمان شاکری
+جنس: پرده چاپی شید
+۱.۳۵×۲.۰۰×۱,۸۰۰,۰۰۰= ۴,۸۶۰,۰۰۰ تومان
+تخفیف ۵٪: ۲۴۳,۰۰۰ تومان
+جمع مبلغ سفارش: ۴,۶۱۷,۰۰۰ تومان
+هزینه حمل: ۱۴۰,۰۰۰ تومان
+جمع کل: ۴,۷۵۷,۰۰۰ تومان</textarea>
+          <div class="hc-row" style="margin-top:8px"><button class="hc-btn hc-blue" onclick="hournoRunInvoiceTest()">🧪 اجرای تست</button></div>
+          <div id="hcInvoiceResult" class="hc-result">هنوز تستی اجرا نشده است.</div>
+        </div>
+      </section>
+
+      <section class="hc-section" data-hcsection="receipt">
+        <div class="hc-card">
+          <h4>متن رسید یا OCR را تست کن</h4>
+          <div class="hc-help">شماره پیگیری نباید به‌عنوان مبلغ واریزی انتخاب شود.</div>
+          <textarea id="hcReceiptTest" class="hc-textarea">بانک ملت
+مبلغ واریزی: ۴,۷۵۷,۰۰۰ تومان
+شماره پیگیری: ۸۹۶۵۴۱۲۳
+شماره کارت: ۶۱۰۴۳۳۷۸۶۰۰۳۶۰۲۷</textarea>
+          <div class="hc-row" style="margin-top:8px"><button class="hc-btn hc-green" onclick="hournoRunReceiptTest()">🧪 اجرای تست</button></div>
+          <div id="hcReceiptResult" class="hc-result">هنوز تستی اجرا نشده است.</div>
+        </div>
+      </section>
+
+      <section class="hc-section" data-hcsection="rules">
+        <div class="hc-grid">
+          <div class="hc-card">
+            <h4>برچسب‌های مبلغ نهایی فاکتور</h4>
+            <div class="hc-help">با «،» جدا کن. ترتیب از راست به چپ اولویت دارد.</div>
+            <input id="hcInvoiceLabels" class="hc-input" value="جمع کل،مبلغ نهایی،قابل پرداخت،مبلغ قابل پرداخت،خالص قابل پرداخت">
+          </div>
+          <div class="hc-card">
+            <h4>برچسب‌های مبلغ واریزی</h4>
+            <div class="hc-help">این‌ها فقط برای تشخیص مبلغ هستند؛ برچسب‌های پیگیری در لیست ممنوعه جدا بررسی می‌شوند.</div>
+            <input id="hcReceiptLabels" class="hc-input" value="مبلغ واریزی،مبلغ انتقال،مبلغ تراکنش،مبلغ پرداختی،واریزی،پرداختی،amount,payment,paid">
+          </div>
+          <div class="hc-card">
+            <h4>برچسب‌های ممنوع برای مبلغ رسید</h4>
+            <input id="hcReceiptForbidden" class="hc-input" value="شماره پیگیری،کد پیگیری،شماره رسید،کد رسید،ارجاع،شماره کارت،کارت،trace,reference,transaction id">
+          </div>
+          <div class="hc-card">
+            <h4>هزینه حمل پیش‌فرض در محاسبه پشتیبان</h4>
+            <input id="hcShippingDefault" class="hc-input" type="number" value="140000" inputmode="numeric">
+          </div>
+        </div>
+        <div class="hc-row" style="margin-top:10px"><button class="hc-btn hc-blue" onclick="hournoSaveRules()">💾 ذخیره قوانین</button><span id="hcRulesStatus" class="hc-help"></span></div>
+      </section>
+
+      <section class="hc-section" data-hcsection="diag">
+        <div class="hc-card">
+          <h4>وضعیت برنامه</h4>
+          <div id="hcDiagResult" class="hc-result">برای اجرای عیب‌یابی روی دکمه زیر بزن.</div>
+          <div class="hc-row" style="margin-top:8px"><button class="hc-btn hc-dark" onclick="hournoRunDiagnostics()">🩺 اجرای عیب‌یابی</button></div>
+        </div>
+      </section>
+
+      <section class="hc-section" data-hcsection="versions">
+        <div class="hc-grid">
+          <div class="hc-card">
+            <h4>ذخیره نسخه تنظیمات</h4>
+            <input id="hcVersionName" class="hc-input" placeholder="مثلاً: رفع مشکل مبلغ رسید">
+            <div class="hc-row" style="margin-top:8px"><button class="hc-btn hc-green" onclick="hournoSaveVersion()">📌 ذخیره نسخه</button><button class="hc-btn hc-gray" onclick="hournoExportConfig()">⬇️ خروجی تنظیمات</button><button class="hc-btn hc-gray" onclick="document.getElementById('hcImportFile').click()">⬆️ ورود تنظیمات</button></div>
+            <input id="hcImportFile" type="file" accept="application/json" style="display:none" onchange="hournoImportConfig(this.files[0])">
+          </div>
+          <div class="hc-card">
+            <h4>نسخه‌های ذخیره‌شده</h4>
+            <div id="hcVersionsList" class="hc-result">هنوز نسخه‌ای ثبت نشده.</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  const KEY = 'HOURNO_CONTROL_CENTER_CONFIG_V1';
+  const VER_KEY = 'HOURNO_CONTROL_CENTER_VERSIONS_V1';
+  const DEFAULTS = {
+    invoiceFinalFix: true,
+    receiptAmountFix: true,
+    invoiceLabels: ['جمع کل','مبلغ نهایی','قابل پرداخت','مبلغ قابل پرداخت','خالص قابل پرداخت'],
+    receiptLabels: ['مبلغ واریزی','مبلغ انتقال','مبلغ تراکنش','مبلغ پرداختی','واریزی','پرداختی','amount','payment','paid'],
+    receiptForbidden: ['شماره پیگیری','کد پیگیری','شماره رسید','کد رسید','ارجاع','شماره کارت','کارت','trace','reference','transaction id'],
+    shippingDefault: 140000
+  };
+  let cfg = loadCfg();
+  let originalAutoParse = null;
+
+  function loadCfg(){
+    try { return Object.assign({}, DEFAULTS, JSON.parse(localStorage.getItem(KEY)||'{}')); } catch(_) { return Object.assign({}, DEFAULTS); }
+  }
+  function saveCfg(){ localStorage.setItem(KEY, JSON.stringify(cfg)); }
+  function normalizeDigits(v){
+    return String(v??'').replace(/[۰-۹]/g,d=>'0123456789'[('۰۱۲۳۴۵۶۷۸۹').indexOf(d)]).replace(/[٠-٩]/g,d=>'0123456789'[('٠١٢٣٤٥٦٧٨٩').indexOf(d)]);
+  }
+  function cleanNum(v){
+    const n = normalizeDigits(v).replace(/ریال|تومان/gi,'').replace(/[،,\s]/g,'');
+    const cleaned = n.replace(/\.(?=.*\.)/g,'').replace(/\./g,'');
+    const x = parseInt(cleaned.replace(/[^0-9-]/g,''),10);
+    return Number.isFinite(x) ? x : 0;
+  }
+  function moneyCandidates(line){
+    const s=normalizeDigits(line);
+    const m=s.match(/(?:\d[\d,،.\s]{2,}\d|\d{4,})/g)||[];
+    return m.map(cleanNum).filter(n=>n>=10000 && n<100000000000);
+  }
+  function isForbiddenReceiptLine(line){
+    const low=normalizeDigits(line).toLowerCase();
+    return (cfg.receiptForbidden||[]).some(lbl=> low.includes(normalizeDigits(lbl).toLowerCase()));
+  }
+  function labelRegex(label){
+    const esc=String(label).trim().replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    return new RegExp(esc.replace(/\s+/g,'\\s*'),'i');
+  }
+  function extractByLabels(text, labels, forbidden){
+    const lines=String(text||'').split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    for(const line of lines){
+      if(forbidden && forbidden(line)) continue;
+      for(const label of labels){
+        if(labelRegex(label).test(line)){
+          const nums=moneyCandidates(line);
+          if(nums.length) return nums[nums.length-1];
+        }
+      }
+    }
+    return 0;
+  }
+  function extractInvoiceTotal(text){
+    const t=String(text||'');
+    if(!cfg.invoiceFinalFix) return 0;
+
+    // 1) Explicit final-total labels win. Never prefer "جمع مبلغ سفارش" when a later final total exists.
+    let n=extractByLabels(t,cfg.invoiceLabels||DEFAULTS.invoiceLabels);
+    if(n) return {value:n,source:'برچسب مبلغ نهایی'};
+
+    // 2) "جمع مبلغ سفارش پس از تخفیف" is a good post-discount subtotal.
+    const post = extractByLabels(t,['جمع مبلغ سفارش پس از تخفیف','جمع پس از تخفیف','خالص سفارش']);
+    const ship = extractByLabels(t,['هزینه حمل','هزینه ارسال','حمل و نقل','هزینه ارسال بار']);
+    if(post){
+      const total=post+(ship||0);
+      return {value:total,source:ship ? 'جمع پس از تخفیف + حمل' : 'جمع پس از تخفیف'};
+    }
+
+    // 3) Otherwise calculate subtotal - discount + shipping.
+    const subtotal=extractByLabels(t,['جمع مبلغ سفارش','جمع قبل از تخفیف','مبلغ سفارش']);
+    let discount=extractByLabels(t,['تخفیف']);
+    if(!discount){
+      const dm=normalizeDigits(t).match(/تخفیف\s*([0-9]+(?:\.[0-9]+)?)\s*[%٪]/i);
+      if(dm && subtotal){ discount=Math.round(subtotal*(parseFloat(dm[1])/100)); }
+    }
+    if(subtotal){
+      const total=Math.max(0,subtotal-discount+(ship||0));
+      return {value:total,source:(ship?'محاسبه سفارش - تخفیف + حمل':'محاسبه سفارش - تخفیف')};
+    }
+    return {value:0,source:'یافت نشد'};
+  }
+  function extractReceipt(text){
+    const t=String(text||'');
+    if(!cfg.receiptAmountFix) return {amount:0,ref:'',bank:''};
+    const lines=t.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+    let amount=0, ref='', bank='';
+    const bankList=['ملت','ملی','سامان','تجارت','صادرات','رسالت','پارسیان','پاسارگاد','رفاه','کشاورزی','مسکن','آینده','مهر','بلوبانک'];
+    for(const b of bankList) if(normalizeDigits(t).includes(b)){bank=b;break;}
+    for(const line of lines){
+      if(!isForbiddenReceiptLine(line)){
+        const nums=moneyCandidates(line);
+        const low=normalizeDigits(line).toLowerCase();
+        const hasAmountLabel=(cfg.receiptLabels||DEFAULTS.receiptLabels).some(lbl=>low.includes(normalizeDigits(lbl).toLowerCase()));
+        if(hasAmountLabel && nums.length){amount=nums[nums.length-1];break;}
+        if(!amount && /(تومان|ریال|amount|payment|paid|واریز)/i.test(low) && nums.length){
+          amount=nums[nums.length-1];
+        }
+      }
+      if(!ref){
+        const rm=normalizeDigits(line).match(/(?:شماره\s*پیگیری|کد\s*پیگیری|شماره\s*رسید|کد\s*رسید|ارجاع|ref(?:erence)?|trace|transaction\s*id)\s*[:：]?\s*([0-9]{4,24})/i);
+        if(rm) ref=rm[1];
+      }
+    }
+    // Safe fallback: only numbers that look like money; never use 12+ digit card/account numbers.
+    if(!amount){
+      const nums=(normalizeDigits(t).match(/\b\d{4,11}\b/g)||[]).map(Number).filter(n=>n>=10000&&n<=99999999999);
+      if(nums.length){ amount=Math.max(...nums); }
+    }
+    return {amount,ref,bank};
+  }
+
+  function collectUi(){
+    cfg.invoiceFinalFix=!!document.getElementById('hcEnableInvoiceFix')?.checked;
+    cfg.receiptAmountFix=!!document.getElementById('hcEnableReceiptFix')?.checked;
+    cfg.invoiceLabels=(document.getElementById('hcInvoiceLabels')?.value||'').split(',').map(s=>s.trim()).filter(Boolean);
+    cfg.receiptLabels=(document.getElementById('hcReceiptLabels')?.value||'').split(',').map(s=>s.trim()).filter(Boolean);
+    cfg.receiptForbidden=(document.getElementById('hcReceiptForbidden')?.value||'').split(',').map(s=>s.trim()).filter(Boolean);
+    cfg.shippingDefault=parseInt(document.getElementById('hcShippingDefault')?.value||140000,10)||140000;
+  }
+  function fillUi(){
+    const a=document.getElementById('hcEnableInvoiceFix'), b=document.getElementById('hcEnableReceiptFix');
+    if(a)a.checked=!!cfg.invoiceFinalFix;if(b)b.checked=!!cfg.receiptAmountFix;
+    const i=document.getElementById('hcInvoiceLabels'), r=document.getElementById('hcReceiptLabels'), f=document.getElementById('hcReceiptForbidden'), s=document.getElementById('hcShippingDefault');
+    if(i)i.value=(cfg.invoiceLabels||[]).join(',');if(r)r.value=(cfg.receiptLabels||[]).join(',');if(f)f.value=(cfg.receiptForbidden||[]).join(',');if(s)s.value=cfg.shippingDefault||140000;
+    const count=(cfg.invoiceFinalFix?1:0)+(cfg.receiptAmountFix?1:0); const el=document.getElementById('hcFixCount'); if(el)el.textContent=String(count);
+  }
+  function applyRuntimePatch(){
+    // V8 already contains the production parser/receipt safeguards.
+    // Never wrap or replace that core parser here; this keeps this panel isolated.
+    const nativeV8Ready = typeof window.hournoParseInvoiceForExcel === 'function'
+      && typeof window.hournoExtractReceiptData === 'function';
+    if(nativeV8Ready) return;
+
+    // Compatibility mode for older builds only.
+    if(!originalAutoParse && typeof window.autoParseInputs==='function') originalAutoParse=window.autoParseInputs;
+    if(!originalAutoParse) return;
+    if(originalAutoParse.__hournoControlWrapped) return;
+    const wrapped=async function(){
+      const result=await originalAutoParse.apply(this,arguments);
+      try{
+        const inv=document.getElementById('rawInvoiceText')?.value||'';
+        const rec=document.getElementById('rawReceiptText')?.value||'';
+        if(cfg.invoiceFinalFix && inv.trim()){
+          const x=extractInvoiceTotal(inv);
+          if(x.value){ document.getElementById('mTotal').value=x.value; }
+        }
+        if(cfg.receiptAmountFix && rec.trim()){
+          const x=extractReceipt(rec);
+          if(x.amount){ document.getElementById('mDeposit').value=x.amount; }
+          if(x.ref && !document.getElementById('mRef').value) document.getElementById('mRef').value=x.ref;
+          if(x.bank && !document.getElementById('mBank').value) document.getElementById('mBank').value=x.bank;
+        }
+        if(typeof window.calcBalance==='function') window.calcBalance();
+      }catch(e){console.warn('HOURNO Control Center post-parse:',e)}
+      return result;
+    };
+    wrapped.__hournoControlWrapped=true;
+    originalAutoParse.__hournoControlWrapped=true;
+    window.autoParseInputs=wrapped;
+  }
+
+  window.hournoControlClose=function(){document.getElementById('hournoControlOverlay').style.display='none';};
+  window.hournoApplyControlConfig=function(){
+    collectUi();saveCfg();applyRuntimePatch();fillUi();
+    const s=document.getElementById('hcApplyStatus');if(s)s.innerHTML='<span class="hc-ok">✔ اصلاحات اعمال و ذخیره شد</span>';
+  };
+  window.hournoResetControlConfig=function(){cfg=Object.assign({},DEFAULTS);saveCfg();fillUi();applyRuntimePatch();
+    const s=document.getElementById('hcApplyStatus');if(s)s.innerHTML='<span class="hc-ok">✔ قوانین پیش‌فرض برگشت</span>';};
+  window.hournoSaveRules=function(){collectUi();saveCfg();fillUi();applyRuntimePatch();const s=document.getElementById('hcRulesStatus');if(s)s.textContent='ذخیره شد ✓';};
+
+  window.hournoRunInvoiceTest=function(){
+    collectUi();
+    const x=extractInvoiceTotal(document.getElementById('hcInvoiceTest')?.value||'');
+    const el=document.getElementById('hcInvoiceResult');
+    if(!x.value) el.innerHTML='<span class="hc-bad">✕ مبلغ نهایی پیدا نشد.</span>';
+    else el.innerHTML=`<span class="hc-ok">✔ مبلغ نهایی: ${Number(x.value).toLocaleString('fa-IR')} تومان</span>\nمنبع: ${x.source}`;
+  };
+  window.hournoRunReceiptTest=function(){
+    collectUi(); const x=extractReceipt(document.getElementById('hcReceiptTest')?.value||'');
+    const el=document.getElementById('hcReceiptResult');
+    el.innerHTML=`<span class="hc-ok">✔ مبلغ واریزی: ${Number(x.amount||0).toLocaleString('fa-IR')} تومان</span>\nشماره پیگیری: ${x.ref||'—'}\nبانک: ${x.bank||'—'}`;
+  };
+  window.hournoAnalyzeIssue=function(){
+    const t=(document.getElementById('hcIssueText')?.value||'').toLowerCase(); const suggestions=[];
+    if(/فاکتور|جمع کل|حمل|قابل پرداخت|قیمت اصلی/.test(t)){cfg.invoiceFinalFix=true;suggestions.push('رفع مبلغ نهایی فاکتور فعال شد.');}
+    if(/رسید|واریز|واریزی|پیگیری|فیش|مبلغ/.test(t)){cfg.receiptAmountFix=true;suggestions.push('رفع تشخیص مبلغ رسید فعال شد.');}
+    if(/کند|هنگ|تاخیر|برمیگرد|سینک|هماهنگ/.test(t)){suggestions.push('مشکل سرعت/سینک نیاز به بررسی Listener و صف Firebase دارد؛ این پنل فعلاً کد سینک را تغییر نمی‌دهد.');}
+    if(!suggestions.length)suggestions.push('برای این متن قانون آماده‌ای پیدا نشد. در تب «قوانین» می‌توانی برچسب‌ها را تنظیم کنی.');
+    fillUi();saveCfg();applyRuntimePatch();
+    const el=document.getElementById('hcIssueStatus');if(el)el.innerHTML='<span class="hc-ok">'+suggestions.join(' ' )+'</span>';
+  };
+
+  window.hournoRunDiagnostics=function(){
+    const out=[]; const au=window.hournoAuthUser||null;
+    out.push('احراز هویت: '+(au ? 'OK — '+(au.email||au.uid||'کاربر') : 'خارج از حساب'));
+    out.push('Firebase: '+(window.firebaseInitialized&&window.database?'OK':'مشکل'));
+    out.push('Realtime sync: '+(window.HOURNO_FIREBASE_READY?'آماده':'در حال آماده‌سازی/نامشخص'));
+    out.push('تعداد سفارش‌های فعلی: '+(Array.isArray(window.orders)?window.orders.length:(typeof orders!=='undefined'?orders.length:'نامشخص')));
+    out.push('مبلغ نهایی هوشمند: '+(cfg.invoiceFinalFix?'فعال':'خاموش'));
+    out.push('مبلغ رسید هوشمند: '+(cfg.receiptAmountFix?'فعال':'خاموش'));
+    out.push('آخرین config: '+new Date().toLocaleString('fa-IR'));
+    const el=document.getElementById('hcDiagResult');if(el)el.textContent=out.join('\n');
+  };
+
+  function getVersions(){try{return JSON.parse(localStorage.getItem(VER_KEY)||'[]')}catch(_){return []}}
+  function setVersions(v){localStorage.setItem(VER_KEY,JSON.stringify(v.slice(0,12)))}
+  function renderVersions(){
+    const el=document.getElementById('hcVersionsList');if(!el)return;const v=getVersions();
+    if(!v.length){el.textContent='هنوز نسخه‌ای ثبت نشده.';return;}
+    el.innerHTML=v.map((x,i)=>`<div style="padding:6px 0;border-bottom:1px solid #e2e8f0"><b>${i+1}. ${x.name}</b><br><span style="color:#64748b">${x.date}</span> <button class="hc-btn hc-gray" style="padding:4px 7px" onclick="hournoRestoreVersion(${i})">بازگردانی</button></div>`).join('');
+  }
+  window.hournoSaveVersion=function(){collectUi();saveCfg();const name=(document.getElementById('hcVersionName')?.value||'نسخه تنظیمات').trim();const v=getVersions();v.unshift({name,date:new Date().toLocaleString('fa-IR'),config:cfg});setVersions(v);renderVersions();};
+  window.hournoRestoreVersion=function(index){const v=getVersions();if(!v[index])return;cfg=Object.assign({},DEFAULTS,v[index].config||{});saveCfg();fillUi();applyRuntimePatch();};
+  window.hournoExportConfig=function(){collectUi();saveCfg();const blob=new Blob([JSON.stringify({app:'HOURNO',type:'control-config',version:1,createdAt:new Date().toISOString(),config:cfg},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='HOURNO_Control_Config.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);};
+  window.hournoImportConfig=function(file){if(!file)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!d.config)throw new Error('config missing');cfg=Object.assign({},DEFAULTS,d.config);saveCfg();fillUi();applyRuntimePatch();}catch(e){alert('فایل تنظیمات معتبر نیست.')}};r.readAsText(file,'utf-8');};
+
+  function init(){
+    const fab=document.getElementById('hournoControlFab'), overlay=document.getElementById('hournoControlOverlay');
+    if(fab)fab.addEventListener('click',()=>{fillUi();renderVersions();overlay.style.display='flex';});
+    document.querySelectorAll('.hc-tab').forEach(btn=>btn.addEventListener('click',()=>{
+      document.querySelectorAll('.hc-tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.hc-section').forEach(x=>x.classList.remove('active'));
+      btn.classList.add('active');document.querySelector(`[data-hcsection="${btn.dataset.hctab}"]`)?.classList.add('active');
+    }));
+    overlay?.addEventListener('click',e=>{if(e.target===overlay)window.hournoControlClose();});
+    fillUi();
+    const loop=()=>{applyRuntimePatch();if(window.hournoAuthUser===undefined)setTimeout(loop,600);};
+    loop();
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init,{once:true});else init();
+
+  // Expose parser helpers for tests/debugging.
+  window.hournoControlExtractInvoiceTotal=extractInvoiceTotal;
+  window.hournoControlExtractReceipt=extractReceipt;
+})();
+</script>
 </body>
 </html>
