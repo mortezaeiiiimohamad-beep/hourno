@@ -2093,6 +2093,18 @@
       .replace(/^پوستر\s*-?\s*/i, '')
       .replace(/\s+/g, ' ')
       .trim();
+
+    // Non-poster products must also resolve to the exact Form 106 catalog row.
+    if (/آسمان\s*مجازی|اسمان\s*مجازی/.test(t)) {
+      const four = /4\s*(?:میل|میلی|mm)/.test(t);
+      return HOURNO_EXCEL_CATALOG[four ? 'تایل چهار میل' : 'تایل دو میل'];
+    }
+    if (/سقف\s*کشسان|کشسان/.test(t)) {
+      return /ترنس|بدون\s*چاپ|سفید/.test(t)
+        ? HOURNO_EXCEL_CATALOG['سقف کشسان ترنس بدون چاپ سفید']
+        : HOURNO_EXCEL_CATALOG['سقف کشسان چاپی هارپون دار'];
+    }
+
     if (/اکسین\s*پلاس.*uv/.test(t)) return HOURNO_EXCEL_CATALOG['اکسین پلاس uv'];
     if (/متالیک.*uv/.test(t)) return HOURNO_EXCEL_CATALOG['متالیک uv'];
     if (/کتان.*uv/.test(t)) return HOURNO_EXCEL_CATALOG['کتان uv'];
@@ -2114,17 +2126,26 @@
     const raw = String(invoiceText || '').trim();
     if (!raw) throw new Error('متن فاکتور خالی است.');
 
-    const norm = hournoNormalizeDigits(raw);
+    const norm = hournoNormalizeDigits(raw)
+      .replace(/\u200c/g, ' ')
+      .replace(/[\u200f\u202a-\u202e]/g, ' ');
     const customer = hournoExtractLabeledValue(norm, ['نام مشتری', 'مشتری']);
-    const phoneMatch = norm.match(/(?:0|\+98)?9\d{9}/);
-    const phone = phoneMatch ? phoneMatch[0] : '';
+    const phoneMatch = norm.match(/(?:\+?98|0098|0)?[\s-]*9(?:[\s-]*\d){9}/);
+    const phone = phoneMatch ? phoneMatch[0].replace(/[\s-]/g, '') : '';
     const dateMatch = norm.match(/\d{4}[\/.\-]\d{1,2}[\/.\-]\d{1,2}/);
     const date = dateMatch ? dateMatch[0].replace(/[.-]/g, '/') : '';
     const productRaw = hournoExtractLabeledValue(norm, ['جنس', 'محصول', 'شرح کالا']);
     const product = hournoCanonicalExcelProduct(productRaw);
+    const smartProduct = (typeof HOURNO_SMART !== 'undefined' && HOURNO_SMART.product)
+      ? HOURNO_SMART.product(productRaw)
+      : null;
 
-    // Extract the commercial line: 4.30×2.53×355,000=3,862,045
+    // Commercial line formats used by HOURNO:
+    // 1) Poster / shid / stretch: 4.30×2.53×355,000=3,862,045
+    // 2) Sky: 4×4=16 تایل × 422,000=6,752,000
+    // 3) Zebra (non-shid): 1.50×2,100,000=3,150,000
     let widthCm = 0, heightCm = 0, unitPrice = 0;
+
     const triple = norm.match(/(\d+(?:\.\d+)?)\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*[×xX*]\s*([0-9][0-9,،.\s]*)/);
     if (triple) {
       let w = Number(triple[1]) || 0;
@@ -2135,8 +2156,65 @@
       unitPrice = hournoNormalizeMoneyToken(triple[3]);
     }
 
+    // Sky invoices do not have the normal three-part multiplication line.
+    // Their first 2 numbers are tile counts, so convert them back to cm (60 cm per tile)
+    // for Form 106, and extract the actual per-tile price instead of the total.
+    if (!unitPrice && smartProduct?.type === 'sky') {
+      const sky = norm.match(/(\d+(?:\.\d+)?)\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*=\s*(\d+)\s*تایل\s*[×xX*]\s*([0-9][0-9,،.\s]*)\s*=/i);
+      if (sky) {
+        const tx = Math.max(1, Math.round(Number(sky[1]) || 0));
+        const ty = Math.max(1, Math.round(Number(sky[2]) || 0));
+        widthCm = tx * 60;
+        heightCm = ty * 60;
+        unitPrice = hournoNormalizeMoneyToken(sky[4]);
+      }
+    }
+
+    // Zebra single/double mechanism invoices use width × unit-price = subtotal.
+    // Extract the first commercial line only when it belongs to a curtain without a height.
+    if (!unitPrice && smartProduct?.type === 'curtain' && smartProduct.kind !== 'shid') {
+      const curtain = norm.match(/(\d+(?:\.\d+)?)\s*[×xX*]\s*([0-9][0-9,،.\s]*)\s*=\s*[0-9][0-9,،.\s]*/);
+      if (curtain) {
+        let w = Number(curtain[1]) || 0;
+        if (w <= 10) w *= 100;
+        widthCm = Math.round(w);
+        unitPrice = hournoNormalizeMoneyToken(curtain[2]);
+      }
+    }
+
+    // Explicit unit/nرخ price, when present anywhere in the invoice, has priority over fallback price.
+    if (!unitPrice) {
+      const explicitUnit = norm.match(/(?:قیمت\s*(?:هر\s*متر(?:مربع)?)?|نرخ|قیمت\s*واحد|واحد)\s*[:：]?\s*([0-9][0-9,،.\s]*)/i);
+      if (explicitUnit) unitPrice = hournoNormalizeMoneyToken(explicitUnit[1]);
+    }
+
+    // Final safety fallback: if an invoice line was unusual but the product is known,
+    // use the saved HOURNO catalog price so the Form 106 production-price cell is never zero.
+    if (!unitPrice && smartProduct && HOURNO_SMART?.prices) {
+      let fallback = 0;
+      if (smartProduct.type === 'poster') fallback = Number(HOURNO_SMART.prices.poster[smartProduct.key] || 0);
+      else if (smartProduct.type === 'sky') fallback = Number(HOURNO_SMART.prices.sky[String(smartProduct.thickness)] || 0);
+      else if (smartProduct.type === 'stretch') fallback = Number(HOURNO_SMART.prices.stretch[smartProduct.kind] || 0);
+      else if (smartProduct.type === 'curtain') {
+        const key = smartProduct.kind === 'shid' ? 'شید چاپی'
+          : smartProduct.kind === 'single' ? 'زبرا تک مکانیزم'
+          : smartProduct.kind === 'simple' ? 'زبرا دومکانیزم ساده'
+          : 'زبرا دومکانیزم آینه ای';
+        fallback = Number(HOURNO_SMART.prices.curtain[key] || 0);
+      }
+      // The invoice can explicitly be in consumer mode. Apply the same 30% factor used by the calculator.
+      if (fallback > 0 && smartProduct.type && /مصرف\s*کننده|مصرفکننده/i.test(norm)) fallback = Math.round(fallback * 1.30);
+      unitPrice = fallback;
+    }
+
     const subtotal = hournoMoneyAfterLabel(norm, ['جمع مبلغ سفارش']);
-    const discountAmount = hournoMoneyAfterLabel(norm, ['تخفیف']);
+    let discountAmount = hournoMoneyAfterLabel(norm, ['تخفیف']);
+    // Handle the common form «تخفیف ۵٪: ۱۹۳,۱۰۲ تومان» without accidentally reading ۵ as the amount.
+    if (discountAmount && /تخفیف\s*\d+(?:\.\d+)?\s*[%٪]/i.test(norm) && discountAmount < 100) {
+      const discountLine = norm.split(/\r?\n/).find(line => /^\s*تخفیف/i.test(line));
+      const dm = discountLine?.match(/تخفیف\s*\d+(?:\.\d+)?\s*[%٪]\s*[:：]?\s*([0-9][0-9,،.\s]*)/i);
+      if (dm) discountAmount = hournoNormalizeMoneyToken(dm[1]);
+    }
     const afterDiscount = hournoMoneyAfterLabel(norm, ['جمع مبلغ سفارش پس از تخفیف']);
     const shipping = /هزینه\s*حمل/.test(HOURNO_SMART.text(norm)) && !/ارسال\s*رایگان|حمل\s*رایگان/.test(HOURNO_SMART.text(norm))
       ? (hournoMoneyAfterLabel(norm, ['هزینه حمل']) || HOURNO_SMART.prices.shipping)
@@ -2222,6 +2300,7 @@
     let rec = document.getElementById('rawReceiptText').value.trim();
     const btn = document.querySelector('.btn-parse');
     const normal = '⚡ استخراج خودکار ارقام و جای‌گذاری در پیش‌فاکتور فرم ۱۰۶';
+    let parsedInvoice = null;
     try {
       if (currentUploadedReceiptBase64 && currentUploadedReceiptBase64.length > 50) {
         if (btn) btn.textContent = '⏳ در حال تشخیص دقیق رسید...';
@@ -2231,16 +2310,12 @@
             rec = (rec ? rec + '\n' : '') + ocr.trim();
             document.getElementById('rawReceiptText').value = rec;
           } else if (window.__HOURNO_RECEIPT_IMAGE_NEW) {
-            // Do not leave an old invoice total sitting in the deposit box when a new receipt
-            // could not be read. It is safer to require a real receipt value than guess.
-            document.getElementById('mDeposit').value = '';
             document.getElementById('mRef').value = '';
             document.getElementById('mBank').value = '';
           }
         } catch (e) {
           console.warn('OCR failed', e);
           if (window.__HOURNO_RECEIPT_IMAGE_NEW) {
-            document.getElementById('mDeposit').value = '';
             document.getElementById('mRef').value = '';
             document.getElementById('mBank').value = '';
           }
@@ -2248,48 +2323,36 @@
       }
 
       if (inv) {
-        const parsed = hournoParseInvoiceForExcel(inv);
-        hournoApplyInvoiceParseToFields(parsed);
+        parsedInvoice = hournoParseInvoiceForExcel(inv);
+        hournoApplyInvoiceParseToFields(parsedInvoice);
+
+        // IMPORTANT: the invoice «جمع کل» is the authoritative payment/receipt amount.
+        // Receipt OCR must never overwrite this value.
+        if (Number(parsedInvoice.finalTotal) > 0) {
+          document.getElementById('mDeposit').value = Math.round(parsedInvoice.finalTotal);
+        }
       }
 
-      // Receipt is deliberately parsed separately so receipt amounts can never
-      // overwrite the invoice final total. The UI stores deposit in TOMAN.
+      // Receipt text/image is parsed only for metadata (tracking number, bank, date).
+      // Its detected amount is intentionally ignored because the user wants the payment
+      // amount in the panel/Excel to come from the invoice text.
       if (rec) {
         const rd = hournoExtractReceiptData(rec, { defaultUnit: 'rial' });
-        if (rd.amount > 0) {
-          const depositToman = rd.unit === 'rial' ? Math.round(rd.amount / 10) : Math.round(rd.amount);
-          document.getElementById('mDeposit').value = depositToman;
-        } else if (window.__HOURNO_RECEIPT_IMAGE_NEW) {
-          document.getElementById('mDeposit').value = '';
-        }
         if (rd.ref) document.getElementById('mRef').value = rd.ref;
         else if (window.__HOURNO_RECEIPT_IMAGE_NEW) document.getElementById('mRef').value = '';
         if (rd.bank) document.getElementById('mBank').value = rd.bank;
         else if (window.__HOURNO_RECEIPT_IMAGE_NEW) document.getElementById('mBank').value = '';
-
-        // Numeric-only OCR fallback for pale/low-contrast bank receipts.
-        // It is used only when no labeled amount/reference was recovered.
-        if ((!rd.amount || !rd.ref) && window.__HOURNO_OCR_NUMERIC_TEXT) {
-          const inferred = hournoInferReceiptNumbersFromOCR();
-          if (!rd.amount && inferred.amount > 0) {
-            document.getElementById('mDeposit').value = Math.round(inferred.amount / 10);
-            rd.amount = inferred.amount;
-            rd.unit = 'rial';
-            rd.confidence = Math.max(rd.confidence || 0, 0.80);
-          }
-          if (!rd.ref && inferred.ref) {
-            document.getElementById('mRef').value = inferred.ref;
-            rd.ref = inferred.ref;
-          }
-        }
-
-        // Keep receipt metadata on the modal for reliable Excel export.
         window.__HOURNO_LAST_RECEIPT = rd;
+      }
+
+      // Keep the invoice total authoritative even after receipt/OCR parsing.
+      if (parsedInvoice && Number(parsedInvoice.finalTotal) > 0) {
+        document.getElementById('mDeposit').value = Math.round(parsedInvoice.finalTotal);
       }
 
       calcBalance();
       if (btn) btn.textContent = normal;
-      alert('✔ فاکتور و رسید جداگانه استخراج و در فرم ۱۰۶ جای‌گذاری شد.');
+      alert('✔ فاکتور و رسید استخراج شدند؛ مبلغ واریزی از «جمع کل» فاکتور تعیین شد.');
     } catch (e) {
       if (btn) btn.textContent = normal;
       console.error(e);
@@ -2471,26 +2534,48 @@
     ord.unitPrice = parseFloat(document.getElementById('mUnitPrice').value) || 0;
     ord.discountPct = parseFloat(document.getElementById('mDiscountPercent').value) || 0;
     if (ord.widthCm > 0 && ord.heightCm > 0) ord.dimensions = `${(ord.widthCm/100).toFixed(2)} × ${(ord.heightCm/100).toFixed(2)} (${((ord.widthCm*ord.heightCm)/10000).toFixed(2)} متر)`;
-    ord.totalAmount = Number(document.getElementById('mTotal').value) || 0;
-    ord.depositAmount = Number(document.getElementById('mDeposit').value) || 0;
+
+    const rawInvoice = String(document.getElementById('rawInvoiceText')?.value || '').trim();
+    let invoiceParsed = null;
+    try {
+      if (rawInvoice && typeof hournoParseInvoiceForExcel === 'function') {
+        invoiceParsed = hournoParseInvoiceForExcel(rawInvoice);
+      }
+    } catch (e) { console.warn('invoice parse on save', e); }
+
+    // FINAL PAYMENT AMOUNT RULE:
+    // The amount used as «مبلغ رسید / واریزی» is taken from the invoice's «جمع کل».
+    // Receipt OCR is used only for receipt metadata (tracking/bank/date), never for amount.
+    const invoicePaymentAmount = Number(invoiceParsed?.finalTotal) || 0;
+    ord.totalAmount = invoicePaymentAmount > 0
+      ? invoicePaymentAmount
+      : (Number(document.getElementById('mTotal').value) || 0);
+    document.getElementById('mTotal').value = ord.totalAmount || '';
+    if (invoicePaymentAmount > 0) {
+      document.getElementById('mDeposit').value = invoicePaymentAmount;
+    }
+    ord.depositAmount = invoicePaymentAmount > 0
+      ? invoicePaymentAmount
+      : (Number(document.getElementById('mDeposit').value) || 0);
+
     ord.receiptRef = String(document.getElementById('mRef').value || '').trim().replace(/[^0-9A-Za-z_-]/g,'');
     ord.bankName = String(document.getElementById('mBank').value || '').trim();
     ord.receiptImage = currentUploadedReceiptBase64 || ord.receiptImage || '';
-    // Persist the exact source text per customer so reopening this customer shows
-    // the same invoice/receipt text instead of a blank textarea.
-    ord.invoiceText = String(document.getElementById('rawInvoiceText')?.value || '').trim();
+    ord.invoiceText = rawInvoice;
     ord.receiptText = String(document.getElementById('rawReceiptText')?.value || '').trim();
     ord.notes = document.getElementById('mNotes').value || '';
-    // اگر OCR قبلاً اطلاعات رسید را پیدا کرده ولی کاربر فیلدها را خالی کرده، از متن OCR دوباره استخراج کن.
+
+    // Parse receipt metadata only. Do NOT use receipt amount for ord.depositAmount.
     try {
-      const raw = document.getElementById('rawReceiptText')?.value || '';
-      if (raw.trim() && typeof hournoExtractReceiptData === 'function') {
-        const rd = hournoExtractReceiptData(raw) || {};
+      const rawReceipt = ord.receiptText;
+      if (rawReceipt.trim() && typeof hournoExtractReceiptData === 'function') {
+        const rd = hournoExtractReceiptData(rawReceipt) || {};
         if (!ord.receiptRef && rd.ref) ord.receiptRef = String(rd.ref).replace(/[^0-9A-Za-z_-]/g,'');
         if (!ord.bankName && rd.bank) ord.bankName = String(rd.bank).trim();
-        if (!ord.depositAmount && rd.amount) ord.depositAmount = Number(rd.amount) || 0;
+        // Intentionally ignore rd.amount: payment amount comes from invoice «جمع کل».
       }
-    } catch(e) { console.warn('receipt parse on save',e); }
+    } catch(e) { console.warn('receipt metadata parse on save',e); }
+
     if (ord.totalAmount > 0) ord.stepInvoice = true;
     if (ord.totalAmount > 0 && ord.depositAmount >= ord.totalAmount) ord.stepPayment = true;
 
@@ -2935,36 +3020,24 @@
       }
 
       if (rawReceipt) {
+        // Receipt amount is intentionally ignored. Only receipt metadata is imported.
         receiptParsed = hournoExtractReceiptData(rawReceipt, { defaultUnit: 'rial' });
-        if (receiptParsed.amount > 0) {
-          const depositToman = receiptParsed.unit === 'rial'
-            ? Math.round(receiptParsed.amount / 10)
-            : Math.round(receiptParsed.amount);
-          document.getElementById('mDeposit').value = depositToman;
-        }
         if (receiptParsed.ref) document.getElementById('mRef').value = receiptParsed.ref;
         if (receiptParsed.bank) document.getElementById('mBank').value = receiptParsed.bank;
 
-        if ((!receiptParsed.amount || !receiptParsed.ref) && window.__HOURNO_OCR_NUMERIC_TEXT) {
+        if (!receiptParsed.ref && window.__HOURNO_OCR_NUMERIC_TEXT) {
           const inferred = hournoInferReceiptNumbersFromOCR();
-          if (!receiptParsed.amount && inferred.amount > 0) {
-            const depositToman = Math.round(inferred.amount / 10);
-            document.getElementById('mDeposit').value = depositToman;
-            receiptParsed.amount = inferred.amount;
-            receiptParsed.unit = 'rial';
-          }
-          if (!receiptParsed.ref && inferred.ref) {
+          if (inferred.ref) {
             document.getElementById('mRef').value = inferred.ref;
             receiptParsed.ref = inferred.ref;
           }
         }
       }
 
-      // Safety: never generate an Excel payment row from a stale invoice total when a new
-      // receipt image was supplied but the receipt could not be extracted.
-      if (window.__HOURNO_RECEIPT_IMAGE_NEW && currentUploadedReceiptBase64 && (!receiptParsed || !receiptParsed.amount)) {
-        alert('رسید جدید شناسایی نشد؛ برای جلوگیری از ورود مبلغ اشتباه، فایل اکسل ساخته نشد.');
-        return;
+      // The invoice final total is the only source for the payment/receipt amount.
+      // Re-apply after receipt parsing so OCR cannot overwrite it.
+      if (parsed && Number(parsed.finalTotal) > 0) {
+        document.getElementById('mDeposit').value = Math.round(parsed.finalTotal);
       }
     } catch (e) {
       console.warn('Pre-export extraction failed:', e);
@@ -2983,7 +3056,7 @@
     const height = parseFloat(document.getElementById('mHeight')?.value) || ord?.heightCm || 0;
     const unitPrice = parseFloat(document.getElementById('mUnitPrice')?.value) || ord?.unitPrice || 0;
     const discountPercent = parseFloat(document.getElementById('mDiscountPercent')?.value) || ord?.discountPct || 0;
-    const deposit = parseFloat(document.getElementById('mDeposit')?.value) || ord?.depositAmount || 0;
+    const deposit = Number(parsed?.finalTotal) > 0 ? Math.round(parsed.finalTotal) : (parseFloat(document.getElementById('mDeposit')?.value) || ord?.depositAmount || 0);
     const refNum = (receiptParsed?.ref || document.getElementById('mRef')?.value.trim() || ord?.receiptRef || '');
     const bank = (receiptParsed?.bank || document.getElementById('mBank')?.value.trim() || ord?.bankName || '');
 
@@ -3743,6 +3816,7 @@
   window.hournoSyncOrderPatchToFirebase = syncOrderPatchToFirebase;
   window.hournoReplaceAllOrdersInFirebase = replaceAllOrdersInFirebase;
 </script>
+<!-- HOURNO FIX: invoice final total is authoritative for payment amount; robust unit-price extraction for all supported invoice formats. -->
 <!-- ===============================================================
      HOURNO CONTROL CENTER
      Configurable troubleshooting panel for parser / workflow issues.
