@@ -2691,17 +2691,36 @@
 
   function hournoSetNumber(doc, ref, value) {
     const c = hournoXmlCell(doc, ref);
+    const mainNS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const f = c.getElementsByTagNameNS(mainNS, 'f');
+    // Never overwrite a formula cell. Cached display values are handled separately.
+    if (f.length) return false;
     c.removeAttribute('t');
-    const f = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'f');
-    // Never erase a formula if a caller accidentally points to one. All export inputs are non-formula cells.
-    if (f.length) throw new Error('تلاش برای نوشتن روی سلول فرمول‌دار: ' + ref);
-    const is = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'is');
+    const is = c.getElementsByTagNameNS(mainNS, 'is');
     for (let i = is.length - 1; i >= 0; i--) is[i].parentNode.removeChild(is[i]);
-    const oldV = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'v');
+    const oldV = c.getElementsByTagNameNS(mainNS, 'v');
     for (let i = oldV.length - 1; i >= 0; i--) oldV[i].parentNode.removeChild(oldV[i]);
-    const v = doc.createElementNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'v');
+    const v = doc.createElementNS(mainNS, 'v');
     v.textContent = String(Number(value) || 0);
     c.appendChild(v);
+    return true;
+  }
+
+  function hournoSetCachedFormulaValue(doc, ref, value) {
+    const c = hournoXmlCell(doc, ref);
+    const mainNS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const f = c.getElementsByTagNameNS(mainNS, 'f');
+    if (!f.length) return false;
+    const is = c.getElementsByTagNameNS(mainNS, 'is');
+    for (let i = is.length - 1; i >= 0; i--) is[i].parentNode.removeChild(is[i]);
+    let vs = c.getElementsByTagNameNS(mainNS, 'v');
+    if (!vs.length) {
+      const v = doc.createElementNS(mainNS, 'v');
+      c.appendChild(v);
+      vs = c.getElementsByTagNameNS(mainNS, 'v');
+    }
+    vs[0].textContent = String(Number(value) || 0);
+    return true;
   }
 
   function hournoSetSimpleFormula(doc, ref, formula, cachedValue = 0) {
@@ -2911,13 +2930,10 @@
         hournoSetNumber(wsOrder, 'U' + row, h);
         hournoSetNumber(wsOrder, 'Z' + row, item.discount || 0);
 
-        // The Form 106 template normally calculates column X (قیمت مترمربع)
-        // through VLOOKUP. For generated customer files, write the exact unit
-        // price parsed from the customer's invoice directly into X as well.
-        // This keeps the existing total formula in AA intact and prevents X
-        // from appearing blank when Excel has not refreshed the lookup cache.
+        // X(row) is an original VLOOKUP formula. Preserve the formula and update only
+        // its cached value so the exact invoice price is immediately visible in Excel.
         if (Number(item.unitPriceToman) > 0) {
-          hournoSetNumber(wsOrder, 'X' + row, Math.round(Number(item.unitPriceToman) * 10));
+          hournoSetCachedFormulaValue(wsOrder, 'X' + row, Math.round(Number(item.unitPriceToman) * 10));
         }
       }
 
@@ -2932,8 +2948,10 @@
         hournoSetNumber(wsOrder, 'S' + row, 100);
         hournoSetNumber(wsOrder, 'U' + row, 100);
         hournoSetNumber(wsOrder, 'Z' + row, 0);
-        // The lookup source is the template's existing A3:C43 Table1 on «تولیدات».
-        // Keep its style and table structure unchanged; only its price cell changes.
+        // X(row) remains the original VLOOKUP formula. Update only its cached visible value.
+        if (Number(item.unitPriceToman) > 0) {
+          hournoSetCachedFormulaValue(wsOrder, 'X' + row, Math.round(Number(item.unitPriceToman) * 10));
+        }
       }
 
       // Clear and fill payment input cells. These are plain input cells, not shared formulas.
@@ -3117,9 +3135,11 @@
 
     // Update only the matching price cells in «تولیدات»; never touch layout/style/page setup.
     const customPrices = {};
-    customPrices[catalogProduct.productionRow] = unitPrice * 10;
+    if (catalogProduct.productionRow) {
+      customPrices[String(catalogProduct.productionRow)] = Math.round(Number(unitPrice) * 10);
+    }
     const shippingToman = parsed?.shipping || (hasShipping ? HOURNO_SMART.prices.shipping : 0);
-    if (hasShipping) customPrices[27] = Math.round(shippingToman * 10);
+    if (hasShipping) customPrices['27'] = Math.round(Number(shippingToman) * 10);
 
     const orderData = {
       orderNumber: orderNum,
