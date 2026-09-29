@@ -2910,6 +2910,15 @@
         hournoSetNumber(wsOrder, 'S' + row, w);
         hournoSetNumber(wsOrder, 'U' + row, h);
         hournoSetNumber(wsOrder, 'Z' + row, item.discount || 0);
+
+        // The Form 106 template normally calculates column X (قیمت مترمربع)
+        // through VLOOKUP. For generated customer files, write the exact unit
+        // price parsed from the customer's invoice directly into X as well.
+        // This keeps the existing total formula in AA intact and prevents X
+        // from appearing blank when Excel has not refreshed the lookup cache.
+        if (Number(item.unitPriceToman) > 0) {
+          hournoSetNumber(wsOrder, 'X' + row, Math.round(Number(item.unitPriceToman) * 10));
+        }
       }
 
       // Shipping is a normal template row (typically row 11 when the product is row 10).
@@ -3080,7 +3089,9 @@
       qty: 1,
       width,
       height,
-      discount: discountPercent > 0 ? (discountPercent / 100) : 0
+      discount: discountPercent > 0 ? (discountPercent / 100) : 0,
+      // Exact unit price from the customer's invoice text (Toman).
+      unitPriceToman: unitPrice
     }];
 
     const invoiceForShipping = rawInvoice || '';
@@ -3088,7 +3099,7 @@
       ? Number(parsed.shipping || 0) > 0
       : (/هزینه\s*حمل/.test(HOURNO_SMART.text(invoiceForShipping)) && !/ارسال\s*رایگان|حمل\s*رایگان/.test(HOURNO_SMART.text(invoiceForShipping)));
     if (hasShipping) {
-      items.push({ name: 'حمل و نقل', code: 36, qty: 1, width: 100, height: 100, discount: 0 });
+      items.push({ name: 'حمل و نقل', code: 36, qty: 1, width: 100, height: 100, discount: 0, unitPriceToman: (parsed?.shipping || HOURNO_SMART.prices.shipping) });
     }
 
     const payments = [];
