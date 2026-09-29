@@ -1528,7 +1528,9 @@
       stepPayment: false,
       stepPrint: false,
       stepSend: false,
-      notes: ''
+      notes: '',
+      invoiceText: '',
+      receiptText: ''
     });
     openInvoiceModal(0);
   }
@@ -1541,8 +1543,10 @@
     currentUploadedReceiptBase64 = ord.receiptImage || '';
 
     document.getElementById('modalTitle').innerText = `📄 درج فاکتور متنی و رسید (فرم ۱۰۶): ${ord.customer || 'سفارش جدید'}`;
-    document.getElementById('rawInvoiceText').value = '';
-    document.getElementById('rawReceiptText').value = '';
+    // Keep the customer's own source documents attached to this customer/order.
+    // Opening the modal must never erase previously saved invoice/receipt text.
+    document.getElementById('rawInvoiceText').value = ord.invoiceText || ord.rawInvoiceText || '';
+    document.getElementById('rawReceiptText').value = ord.receiptText || ord.rawReceiptText || '';
     window.__HOURNO_LAST_RECEIPT = null;
     window.__HOURNO_RECEIPT_IMAGE_NEW = false;
 
@@ -1916,19 +1920,64 @@
       }
     }
 
-    // Tracking: look only on/near the line containing the tracking label.
-    const trackingLine = lines.find(line => /(شماره\s*پیگیری|کد\s*پیگیری|پیگیری|شماره\s*رسید|کد\s*رسید|ارجاع|trace|transaction\s*id)/i.test(line));
-    const refSource = trackingLine || t;
-    const refM = refSource.match(/(?:شماره\s*پیگیری|کد\s*پیگیری|پیگیری|شماره\s*رسید|کد\s*رسید|ارجاع|ref(?:erence)?|trace|transaction\s*id)[^0-9]*([0-9][0-9\s.,٬،-]{3,20})/i);
-    if (refM) out.ref = String(hournoCleanNumber(refM[1])).replace(/\.0+$/,'');
-
-    // Some OCR engines output an isolated 6-digit tracking number on the next line.
-    if (!out.ref) {
-      const idx = lines.findIndex(line => /پیگیری/.test(line));
-      if (idx >= 0 && lines[idx + 1]) {
-        const nextDigits = lines[idx + 1].match(/([0-9][0-9\s.,٬،-]{3,20})/);
-        if (nextDigits) out.ref = String(hournoCleanNumber(nextDigits[1])).replace(/\.0+$/,'');
+    // Tracking: OCR of Persian RTL receipts may place the digits BEFORE the label
+    // (e.g. "۷۶۰.۷۹۷ شماره پیگیری:") or AFTER it. Handle both directions.
+    const trackingLabels = /(شماره\s*پیگیری|کد\s*پیگیری|پیگیری|شماره\s*رسید|کد\s*رسید|ارجاع|ref(?:erence)?|trace|transaction\s*id)/i;
+    const normalizeRef = (v) => {
+      const n = hournoCleanNumber(v);
+      return n > 0 ? String(Math.round(n)) : '';
+    };
+    for (const line of lines) {
+      if (!trackingLabels.test(line)) continue;
+      let m = line.match(/(?:شماره\s*پیگیری|کد\s*پیگیری|پیگیری|شماره\s*رسید|کد\s*رسید|ارجاع|ref(?:erence)?|trace|transaction\s*id)[^0-9]*([0-9][0-9\s.,٬،-]{3,20})/i);
+      if (!m) {
+        m = line.match(/([0-9][0-9\s.,٬،-]{3,20})[^0-9]*(?:شماره\s*پیگیری|کد\s*پیگیری|پیگیری|شماره\s*رسید|کد\s*رسید|ارجاع|ref(?:erence)?|trace|transaction\s*id)/i);
       }
+      if (m) {
+        const candidate = normalizeRef(m[1]);
+        // Tracking numbers on these receipts are commonly 6–12 digits; reject dates.
+        if (candidate && /^\d{6,12}$/.test(candidate) && !/^14\d{6,8}$/.test(candidate)) {
+          out.ref = candidate;
+          break;
+        }
+      }
+    }
+
+    // OCR can split label and number across adjacent lines. Search both directions.
+    if (!out.ref) {
+      const idx = lines.findIndex(line => trackingLabels.test(line));
+      if (idx >= 0) {
+        const nearby = [lines[idx + 1], lines[idx - 1]].filter(Boolean);
+        for (const near of nearby) {
+          const nums = near.match(/([0-9][0-9\s.,٬،-]{3,20})/g) || [];
+          const parsedCandidates = nums.map(token => normalizeRef(token)).filter(Boolean);
+          // Prefer exactly 6 digits, which is the format used by many HOURNO bank receipts.
+          parsedCandidates.sort((a,b) => (String(a).length === 6 ? 0 : 1) - (String(b).length === 6 ? 0 : 1));
+          for (const candidate of parsedCandidates) {
+            if (candidate === String(Math.round(out.amount))) continue;
+            if (candidate && /^\d{6,12}$/.test(candidate) && !/^14\d{6,8}$/.test(candidate)) {
+              out.ref = candidate;
+              break;
+            }
+          }
+          if (out.ref) break;
+        }
+      }
+    }
+
+    // Final safe fallback: choose a 6-digit token from the receipt text that is not the
+    // already detected amount, phone, card-like long number, date, or time.
+    if (!out.ref) {
+      const candidates = [];
+      const tokenRe = /[0-9][0-9\s.,٬،-]{5,15}/g;
+      for (const token of (t.match(tokenRe) || [])) {
+        const candidate = normalizeRef(token);
+        if (!candidate || candidate === String(Math.round(out.amount))) continue;
+        if (!/^\d{6}$/.test(candidate)) continue;
+        if (/^14\d{4}$/.test(candidate) || /^\d{2,4}\d{2}\d{2}$/.test(candidate)) continue;
+        candidates.push(candidate);
+      }
+      if (candidates.length) out.ref = candidates[0];
     }
 
     // Receipt date/time.
@@ -2159,7 +2208,7 @@
     // Receipt amount is normally the only large value in this lower crop.
     const amount = all.filter(x => x.n >= 1000000 && x.n <= 9999999999).sort((a,b)=>b.n-a.n)[0]?.n || 0;
     const refs = all.filter(x => x.n >= 10000 && x.n <= 999999999 && x.n !== amount)
-      .filter(x => !/^(13|14)\d{6}$/.test(String(x.n)))
+      .filter(x => !/^(13|14)\d{6,8}$/.test(String(x.n)))
       .sort((a,b) => {
         const sixA = String(a.n).length === 6 ? 1 : 0;
         const sixB = String(b.n).length === 6 ? 1 : 0;
@@ -2427,6 +2476,10 @@
     ord.receiptRef = String(document.getElementById('mRef').value || '').trim().replace(/[^0-9A-Za-z_-]/g,'');
     ord.bankName = String(document.getElementById('mBank').value || '').trim();
     ord.receiptImage = currentUploadedReceiptBase64 || ord.receiptImage || '';
+    // Persist the exact source text per customer so reopening this customer shows
+    // the same invoice/receipt text instead of a blank textarea.
+    ord.invoiceText = String(document.getElementById('rawInvoiceText')?.value || '').trim();
+    ord.receiptText = String(document.getElementById('rawReceiptText')?.value || '').trim();
     ord.notes = document.getElementById('mNotes').value || '';
     // اگر OCR قبلاً اطلاعات رسید را پیدا کرده ولی کاربر فیلدها را خالی کرده، از متن OCR دوباره استخراج کن.
     try {
@@ -2497,129 +2550,349 @@
   window.hournoEnsureXLSX = hournoEnsureXLSX;
 
 
-  // Official ExcelJS Generator function for Form 106
+  // Exact-template Excel generator (ZIP/XML patching; does NOT rewrite the workbook).
+  // This intentionally avoids ExcelJS shared-formula rewriting, which caused:
+  // "Shared Formula master must exist above row ..." in the original template.
+  let HOURNO_JSZIP_LOADING = null;
+
+  function hournoEnsureJSZip() {
+    if (window.JSZip) return Promise.resolve(window.JSZip);
+    if (HOURNO_JSZIP_LOADING) return HOURNO_JSZIP_LOADING;
+    HOURNO_JSZIP_LOADING = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      s.onload = () => window.JSZip ? resolve(window.JSZip) : reject(new Error('کتابخانه JSZip بارگذاری نشد.'));
+      s.onerror = () => reject(new Error('کتابخانه JSZip بارگذاری نشد. اینترنت را بررسی کنید.'));
+      document.head.appendChild(s);
+    });
+    return HOURNO_JSZIP_LOADING;
+  }
+
+  function hournoXmlCell(doc, ref) {
+    const cells = doc.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'c');
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i].getAttribute('r') === ref) return cells[i];
+    }
+    // Cell creation is only used for existing blank styled areas in the original template.
+    const rowNum = (ref.match(/\d+$/) || ['0'])[0];
+    const rows = doc.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'row');
+    let row = null;
+    for (let i = 0; i < rows.length; i++) if (rows[i].getAttribute('r') === rowNum) { row = rows[i]; break; }
+    if (!row) throw new Error('ردیف سلول ' + ref + ' در قالب اصلی یافت نشد.');
+    const c = doc.createElementNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'c');
+    c.setAttribute('r', ref);
+    row.appendChild(c);
+    return c;
+  }
+
+  function hournoSetInlineText(doc, ref, value) {
+    const c = hournoXmlCell(doc, ref);
+    c.removeAttribute('t');
+    const f = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'f');
+    for (let i = f.length - 1; i >= 0; i--) f[i].parentNode.removeChild(f[i]);
+    const v = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'v');
+    for (let i = v.length - 1; i >= 0; i--) v[i].parentNode.removeChild(v[i]);
+    const oldIs = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'is');
+    for (let i = oldIs.length - 1; i >= 0; i--) oldIs[i].parentNode.removeChild(oldIs[i]);
+    c.setAttribute('t', 'inlineStr');
+    const is = doc.createElementNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'is');
+    const t = doc.createElementNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 't');
+    const str = String(value ?? '');
+    if (/^\s|\s$/.test(str)) t.setAttribute('xml:space', 'preserve');
+    t.textContent = str;
+    is.appendChild(t);
+    c.appendChild(is);
+  }
+
+  function hournoSetNumber(doc, ref, value) {
+    const c = hournoXmlCell(doc, ref);
+    c.removeAttribute('t');
+    const f = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'f');
+    // Never erase a formula if a caller accidentally points to one. All export inputs are non-formula cells.
+    if (f.length) throw new Error('تلاش برای نوشتن روی سلول فرمول‌دار: ' + ref);
+    const is = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'is');
+    for (let i = is.length - 1; i >= 0; i--) is[i].parentNode.removeChild(is[i]);
+    const oldV = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'v');
+    for (let i = oldV.length - 1; i >= 0; i--) oldV[i].parentNode.removeChild(oldV[i]);
+    const v = doc.createElementNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'v');
+    v.textContent = String(Number(value) || 0);
+    c.appendChild(v);
+  }
+
+  function hournoSetSimpleFormula(doc, ref, formula, cachedValue = 0) {
+    const c = hournoXmlCell(doc, ref);
+    c.removeAttribute('t');
+    const is = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'is');
+    for (let i = is.length - 1; i >= 0; i--) is[i].parentNode.removeChild(is[i]);
+    const fs = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'f');
+    for (let i = fs.length - 1; i >= 0; i--) fs[i].parentNode.removeChild(fs[i]);
+    const vs = c.getElementsByTagNameNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'v');
+    for (let i = vs.length - 1; i >= 0; i--) vs[i].parentNode.removeChild(vs[i]);
+    const f = doc.createElementNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'f');
+    f.textContent = formula;
+    c.appendChild(f);
+    const v = doc.createElementNS('http://schemas.openxmlformats.org/spreadsheetml/2006/main', 'v');
+    v.textContent = String(cachedValue ?? 0);
+    c.appendChild(v);
+  }
+
+  function hournoParseXml(text) {
+    return new DOMParser().parseFromString(text, 'application/xml');
+  }
+
+  function hournoSerializeXml(doc) {
+    return new XMLSerializer().serializeToString(doc);
+  }
+
+  // HOURNO SAFE RECEIPT IMAGE EXPORT
+  // Adds ONE new worksheet and drawing directly to the XLSX ZIP package.
+  // It does NOT load/rewrite the existing workbook with ExcelJS, so shared formulas,
+  // styles, RTL settings, print areas and the original Form 106 sheets remain intact.
+  function hournoReceiptImageParts(base64) {
+    const s = String(base64 || '').trim();
+    const m = s.match(/^data:image\/(png|jpe?g);base64,(.+)$/i);
+    if (!m) return null;
+    const ext = m[1].toLowerCase().startsWith('jp') ? 'jpeg' : 'png';
+    return { ext, bytes: atob(m[2]) };
+  }
+
+  function hournoXmlEsc(v) {
+    return String(v ?? '')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&apos;');
+  }
+
+  async function hournoAddReceiptSheetDirect(zip, orderData) {
+    const meta = hournoReceiptImageParts(orderData && orderData.receiptImage);
+    if (!meta || !zip) return false;
+
+    const wbXmlPath = 'xl/workbook.xml';
+    const relsPath = 'xl/_rels/workbook.xml.rels';
+    const ctPath = '[Content_Types].xml';
+    const sheetPath = 'xl/worksheets/sheet7.xml';
+    const sheetRelsPath = 'xl/worksheets/_rels/sheet7.xml.rels';
+    const drawingPath = 'xl/drawings/drawing7.xml';
+    const drawingRelsPath = 'xl/drawings/_rels/drawing7.xml.rels';
+
+    const nextSheetId = 7;
+    const nextSheetRelId = 'rId11';
+    const nextDrawingRelId = 'rId1';
+    const nextMediaName = 'hourno_receipt_' + Date.now() + '.' + meta.ext;
+    const mediaPath = 'xl/media/' + nextMediaName;
+    const binary = meta.bytes;
+    const binaryU8 = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) binaryU8[i] = binary.charCodeAt(i);
+
+    const wbXml = await zip.file(wbXmlPath).async('string');
+    const wbDoc = hournoParseXml(wbXml);
+    const mainNS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const rNS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const sheets = wbDoc.getElementsByTagNameNS(mainNS, 'sheets')[0];
+    if (!sheets) throw new Error('بخش sheets در قالب فرم ۱۰۶ پیدا نشد.');
+    const sheet = wbDoc.createElementNS(mainNS, 'sheet');
+    sheet.setAttribute('name', 'تصویر فیش');
+    sheet.setAttribute('sheetId', String(nextSheetId));
+    sheet.setAttributeNS(rNS, 'r:id', nextSheetRelId);
+    sheets.appendChild(sheet);
+    zip.file(wbXmlPath, hournoSerializeXml(wbDoc));
+
+    const relsXml = await zip.file(relsPath).async('string');
+    const relsDoc = hournoParseXml(relsXml);
+    const relRoot = relsDoc.documentElement;
+    const officeRelNS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const rel = relsDoc.createElementNS('http://schemas.openxmlformats.org/package/2006/relationships', 'Relationship');
+    rel.setAttribute('Id', nextSheetRelId);
+    rel.setAttribute('Type', officeRelNS + '/worksheet');
+    rel.setAttribute('Target', 'worksheets/sheet7.xml');
+    relRoot.appendChild(rel);
+    zip.file(relsPath, hournoSerializeXml(relsDoc));
+
+    let ctXml = await zip.file(ctPath).async('string');
+    const ctDoc = hournoParseXml(ctXml);
+    const ctNS = 'http://schemas.openxmlformats.org/package/2006/content-types';
+    const types = ctDoc.documentElement;
+    const overrideSheet = ctDoc.createElementNS(ctNS, 'Override');
+    overrideSheet.setAttribute('PartName', '/xl/worksheets/sheet7.xml');
+    overrideSheet.setAttribute('ContentType', 'application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml');
+    types.appendChild(overrideSheet);
+    const overrideDrawing = ctDoc.createElementNS(ctNS, 'Override');
+    overrideDrawing.setAttribute('PartName', '/xl/drawings/drawing7.xml');
+    overrideDrawing.setAttribute('ContentType', 'application/vnd.openxmlformats-officedocument.drawing+xml');
+    types.appendChild(overrideDrawing);
+    const defaultExts = Array.from(types.getElementsByTagNameNS(ctNS, 'Default')).map(x => String(x.getAttribute('Extension') || '').toLowerCase());
+    if (!defaultExts.includes(meta.ext)) {
+      const def = ctDoc.createElementNS(ctNS, 'Default');
+      def.setAttribute('Extension', meta.ext);
+      def.setAttribute('ContentType', meta.ext === 'jpeg' ? 'image/jpeg' : 'image/png');
+      types.insertBefore(def, types.firstChild);
+    }
+    zip.file(ctPath, hournoSerializeXml(ctDoc));
+
+    const imageCx = String(Math.round(430 * 9525));
+    const imageCy = String(Math.round(650 * 9525));
+    const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`+
+      `<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" `+
+      `xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" `+
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`+
+      `<xdr:oneCellAnchor>`+
+      `<xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>`+
+      `<xdr:ext cx="${imageCx}" cy="${imageCy}"/>`+
+      `<xdr:pic>`+
+      `<xdr:nvPicPr><xdr:cNvPr id="2" name="HOURNO Receipt"/><xdr:cNvPicPr preferRelativeResize="0"/></xdr:nvPicPr>`+
+      `<xdr:blipFill><a:blip r:embed="${nextDrawingRelId}"/><a:srcRect/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>`+
+      `<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${imageCx}" cy="${imageCy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr>`+
+      `</xdr:pic><xdr:clientData/></xdr:oneCellAnchor>`+
+      `</xdr:wsDr>`;
+    zip.file(drawingPath, drawingXml);
+
+    const drawingRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`+
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`+
+      `<Relationship Id="${nextDrawingRelId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/${hournoXmlEsc(nextMediaName)}"/>`+
+      `</Relationships>`;
+    zip.file(drawingRelsPath, drawingRels);
+
+    const sheetRels = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`+
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">`+
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing7.xml"/>`+
+      `</Relationships>`;
+    zip.file(sheetRelsPath, sheetRels);
+
+    const sheetXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`+
+      `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`+
+      `<dimension ref="A1:H40"/>`+
+      `<sheetViews><sheetView rightToLeft="1" showGridLines="0" zoomScale="85" zoomScaleNormal="85" workbookViewId="0"/></sheetViews>`+
+      `<sheetFormatPr defaultRowHeight="15"/>`+
+      `<sheetData>`+
+      `<row r="1" ht="24"><c r="A1" t="inlineStr"><is><t>تصویر فیش واریزی مشتری</t></is></c></row>`+
+      `<row r="2"><c r="A2" t="inlineStr"><is><t>${hournoXmlEsc(orderData.customerName || '')}</t></is></c></row>`+
+      `<row r="3"><c r="A3" t="inlineStr"><is><t>شماره سفارش: ${hournoXmlEsc(orderData.orderNumber || '')}</t></is></c></row>`+
+      `</sheetData>`+
+      `<pageMargins left="0.35" right="0.35" top="0.5" bottom="0.5" header="0.2" footer="0.2"/>`+
+      `<drawing r:id="rId1"/>`+
+      `</worksheet>`;
+    zip.file(sheetPath, sheetXml);
+    zip.file(mediaPath, binaryU8);
+    return true;
+  }
+
   async function generateAndDownloadForm106Official(orderData) {
     try {
-      let ej = window.ExcelJS;
-      if (!ej) {
-        // try load dynamically
-        await new Promise((res, rej) => {
-          const s = document.createElement('script');
-          s.src = 'https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js';
-          s.onload = () => res();
-          s.onerror = () => rej(new Error('کتابخانه ExcelJS بارگذاری نشد'));
-          document.head.appendChild(s);
-        });
-        ej = window.ExcelJS;
-      }
-
-      if (!ej) {
-        alert('کتابخانه طراحی اکسل در دسترس نیست.');
-        return;
-      }
-
+      const JSZip = await hournoEnsureJSZip();
       const binaryString = atob(TEMPLATE_FORM_106_BASE64);
-      const len = binaryString.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+      const bytes = new Uint8Array(binaryString.length);
+      for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
+
+      const zip = await JSZip.loadAsync(bytes.buffer);
+      const orderXmlText = await zip.file('xl/worksheets/sheet1.xml').async('string');
+      const tolidXmlText = await zip.file('xl/worksheets/sheet5.xml').async('string');
+      const wsOrder = hournoParseXml(orderXmlText);
+      const wsTolid = hournoParseXml(tolidXmlText);
+
+      // Header cells only. Formatting, merge ranges, widths, heights, page setup and styles remain intact.
+      hournoSetNumber(wsOrder, 'W6', Number(orderData.orderNumber) || 0);
+      hournoSetInlineText(wsOrder, 'AA6', orderData.date || '');
+      hournoSetInlineText(wsOrder, 'W7', orderData.customerName || '');
+      hournoSetInlineText(wsOrder, 'AA7', orderData.phone || '');
+
+      // These three cells are originally blank and are not shared-formula cells.
+      // We only link the order number to the existing order sheet.
+      for (const sheetName of ['sheet2.xml', 'sheet3.xml', 'sheet4.xml']) {
+        const file = zip.file('xl/worksheets/' + sheetName);
+        if (!file) continue;
+        const doc = hournoParseXml(await file.async('string'));
+        hournoSetSimpleFormula(doc, 'R6', "'فرم سفارش'!W6", Number(orderData.orderNumber) || 0);
+        zip.file('xl/worksheets/' + sheetName, hournoSerializeXml(doc));
       }
 
-      const workbook = new ej.Workbook();
-      await workbook.xlsx.load(bytes.buffer);
-
-      const wsOrder = workbook.getWorksheet('فرم سفارش');
-      const wsPish = workbook.getWorksheet('پیش فاکتور');
-      const wsKala = workbook.getWorksheet('رسید تحویل کالا');
-      const wsAlbum = workbook.getWorksheet('رسید تحویل البوم');
-      const wsTolid = workbook.getWorksheet('تولیدات');
-
-      if (!wsOrder) {
-        alert('شیت فرم سفارش در قالب اصلی یافت نشد!');
-        return;
-      }
-
-      // 1. Header Information
-      wsOrder.getCell('W6').value = orderData.orderNumber || '-';
-      wsOrder.getCell('AA6').value = orderData.date || '';
-      wsOrder.getCell('W7').value = orderData.customerName || '';
-      wsOrder.getCell('AA7').value = orderData.phone || '';
-
-      const refFormula = "='فرم سفارش'!W6";
-      if (wsPish) wsPish.getCell('R6').value = { formula: refFormula };
-      if (wsKala) wsKala.getCell('R6').value = { formula: refFormula };
-      if (wsAlbum) wsAlbum.getCell('R6').value = { formula: refFormula };
-
-      // 2. Custom prices in تولیدات if any
-      if (wsTolid && orderData.customPrices) {
+      // Product/custom production prices. Only the requested C cells change.
+      if (orderData.customPrices) {
         for (const [rNum, pr] of Object.entries(orderData.customPrices)) {
-          wsTolid.getCell('C' + rNum).value = Number(pr);
+          hournoSetNumber(wsTolid, 'C' + rNum, pr);
         }
       }
 
-      // 3. Keep all original template formulas/styles. Only populate the required cells below.
-
-      // 4. Fill Items
-      if (orderData.items && orderData.items.length > 0) {
-        orderData.items.forEach((item, idx) => {
-          const row = 10 + idx;
-          if (row > 18) return;
-
-          let w = parseFloat(item.width) || 0;
-          let h = parseFloat(item.height) || 0;
-          if (w > 0 && w < 25) w = Math.round(w * 100);
-          if (h > 0 && h < 25) h = Math.round(h * 100);
-
-          wsOrder.getCell('M' + row).value = item.name || '';
-          wsOrder.getCell('P' + row).value = item.code || '';
-          wsOrder.getCell('R' + row).value = item.qty || 1;
-          wsOrder.getCell('S' + row).value = w;
-          wsOrder.getCell('U' + row).value = h;
-          wsOrder.getCell('Z' + row).value = item.discount || 0;
-        });
+      // Populate input cells only. DO NOT touch the template's shared formulas (H/I/W/AA/AD/AE/Q...).
+      for (const [idx, item] of (orderData.items || []).entries()) {
+        const row = 10 + idx;
+        if (row > 18) break;
+        let w = Number(item.width) || 0;
+        let h = Number(item.height) || 0;
+        if (w > 0 && w < 25) w = Math.round(w * 100);
+        if (h > 0 && h < 25) h = Math.round(h * 100);
+        hournoSetInlineText(wsOrder, 'M' + row, item.name || '');
+        hournoSetNumber(wsOrder, 'P' + row, item.code || 0);
+        hournoSetNumber(wsOrder, 'R' + row, item.qty || 1);
+        hournoSetNumber(wsOrder, 'S' + row, w);
+        hournoSetNumber(wsOrder, 'U' + row, h);
+        hournoSetNumber(wsOrder, 'Z' + row, item.discount || 0);
       }
 
-      // 5. Clear payments in rows 22 & 23
-      [22, 23].forEach((r) => {
-        wsOrder.getCell('O' + r).value = null;
-        wsOrder.getCell('R' + r).value = null;
-        wsOrder.getCell('W' + r).value = null;
-        wsOrder.getCell('Z' + r).value = null;
-      });
-
-      // 6. Fill Payments
-      if (orderData.payments && orderData.payments.length > 0) {
-        orderData.payments.forEach((p, idx) => {
-          const pRow = 22 + idx;
-          if (pRow > 23) return;
-          const amtRials = p.isToman ? p.amount * 10 : p.amount;
-          wsOrder.getCell('O' + pRow).value = p.date || '';
-          wsOrder.getCell('R' + pRow).value = amtRials || 0;
-          wsOrder.getCell('W' + pRow).value = p.bank || 'ملت';
-          wsOrder.getCell('Z' + pRow).value = String(p.trackingNumber || '');
-        });
+      // Shipping is a normal template row (typically row 11 when the product is row 10).
+      // We only fill its input cells and the existing template VLOOKUP/size/total formulas do the rest.
+      const shipIndex = (orderData.items || []).findIndex(i => String(i.code) === '36' || String(i.name || '').trim() === 'حمل و نقل');
+      if (shipIndex >= 0) {
+        const row = 10 + shipIndex;
+        hournoSetInlineText(wsOrder, 'M' + row, 'حمل و نقل');
+        hournoSetNumber(wsOrder, 'P' + row, 36);
+        hournoSetNumber(wsOrder, 'R' + row, 1);
+        hournoSetNumber(wsOrder, 'S' + row, 100);
+        hournoSetNumber(wsOrder, 'U' + row, 100);
+        hournoSetNumber(wsOrder, 'Z' + row, 0);
+        // The lookup source is the template's existing A3:C43 Table1 on «تولیدات».
+        // Keep its style and table structure unchanged; only its price cell changes.
       }
 
-      // 7. Write Buffer and Trigger Download
-      const buffer = await workbook.xlsx.writeBuffer();
-      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const cleanName = (orderData.customerName || 'سفارش').replace(/[\/\\*:\?<>|"]/g, '_');
+      // Clear and fill payment input cells. These are plain input cells, not shared formulas.
+      for (const r of [22, 23]) {
+        hournoSetInlineText(wsOrder, 'O' + r, '');
+        hournoSetNumber(wsOrder, 'R' + r, 0);
+        hournoSetInlineText(wsOrder, 'W' + r, '');
+        hournoSetInlineText(wsOrder, 'Z' + r, '');
+      }
+      for (const [idx, p] of (orderData.payments || []).entries()) {
+        const r = 22 + idx;
+        if (r > 23) break;
+        const amtRials = p.isToman ? Math.round(Number(p.amount) || 0) * 10 : Math.round(Number(p.amount) || 0);
+        hournoSetInlineText(wsOrder, 'O' + r, p.date || '');
+        hournoSetNumber(wsOrder, 'R' + r, amtRials);
+        hournoSetInlineText(wsOrder, 'W' + r, p.bank || '');
+        hournoSetInlineText(wsOrder, 'Z' + r, String(p.trackingNumber || ''));
+      }
+
+      // Ask Excel to recalculate on open. No form layout/style is changed.
+      const wbXml = await zip.file('xl/workbook.xml').async('string');
+      const wbDoc = hournoParseXml(wbXml);
+      const mainNS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+      let calcPr = wbDoc.getElementsByTagNameNS(mainNS, 'calcPr')[0];
+      if (!calcPr) {
+        const workbookEl = wbDoc.getElementsByTagNameNS(mainNS, 'workbook')[0];
+        calcPr = wbDoc.createElementNS(mainNS, 'calcPr');
+        workbookEl.appendChild(calcPr);
+      }
+      calcPr.setAttribute('calcMode', 'auto');
+      calcPr.setAttribute('fullCalcOnLoad', '1');
+      calcPr.setAttribute('forceFullCalc', '1');
+      zip.file('xl/workbook.xml', hournoSerializeXml(wbDoc));
+
+      zip.file('xl/worksheets/sheet1.xml', hournoSerializeXml(wsOrder));
+      zip.file('xl/worksheets/sheet5.xml', hournoSerializeXml(wsTolid));
+
+      // Add receipt image as a brand-new sheet without rewriting any existing sheet.
+      if (orderData.receiptImage) await hournoAddReceiptSheetDirect(zip, orderData);
+
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 6 } });
+      const cleanName = String(orderData.customerName || 'سفارش').replace(/[\\/:*?<>|"\u0000-\u001f]/g, '_').trim() || 'سفارش';
       const fileName = 'پیش_فاکتور_' + cleanName + '.xlsx';
-
-      const url = window.URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = fileName;
       document.body.appendChild(a);
       a.click();
-      setTimeout(() => {
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-      }, 500);
-
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 800);
     } catch (err) {
       console.error(err);
-      alert('خطا در صدور فایل فرم ۱۰۶: ' + (err.message || err));
+      alert('خطا در صدور فایل فرم ۱۰۶: ' + (err?.message || err));
     }
   }
 
@@ -2629,10 +2902,18 @@
     if (typeof index === 'number' && index >= 0 && index < orders.length) ord = orders[index];
 
     // Re-read both raw sources before export so Excel always reflects the latest pasted invoice/receipt.
-    const rawInvoice = String(document.getElementById('rawInvoiceText')?.value || '').trim();
+    // Fallback to the customer's saved source text when the modal textarea is empty.
+    let rawInvoice = String(document.getElementById('rawInvoiceText')?.value || '').trim();
     let rawReceipt = String(document.getElementById('rawReceiptText')?.value || '').trim();
+    if (!rawInvoice && ord) rawInvoice = String(ord.invoiceText || ord.rawInvoiceText || '').trim();
+    if (!rawReceipt && ord) rawReceipt = String(ord.receiptText || ord.rawReceiptText || '').trim();
     let parsed = null;
     let receiptParsed = null;
+
+    if (ord) {
+      if (rawInvoice) ord.invoiceText = rawInvoice;
+      if (rawReceipt) ord.receiptText = rawReceipt;
+    }
 
     try {
       if (rawInvoice) {
@@ -2644,7 +2925,10 @@
       if (!rawReceipt && currentUploadedReceiptBase64 && currentUploadedReceiptBase64.length > 50) {
         try {
           rawReceipt = await hournoOCRReceiptImage();
-          if (rawReceipt.trim()) document.getElementById('rawReceiptText').value = rawReceipt.trim();
+          if (rawReceipt.trim()) {
+            document.getElementById('rawReceiptText').value = rawReceipt.trim();
+            if (ord) ord.receiptText = rawReceipt.trim();
+          }
         } catch (ocrErr) {
           console.warn('Receipt OCR before Excel:', ocrErr);
         }
@@ -2728,7 +3012,7 @@
 
     const invoiceForShipping = rawInvoice || '';
     const hasShipping = parsed
-      ? parsed.hasShipping
+      ? Number(parsed.shipping || 0) > 0
       : (/هزینه\s*حمل/.test(HOURNO_SMART.text(invoiceForShipping)) && !/ارسال\s*رایگان|حمل\s*رایگان/.test(HOURNO_SMART.text(invoiceForShipping)));
     if (hasShipping) {
       items.push({ name: 'حمل و نقل', code: 36, qty: 1, width: 100, height: 100, discount: 0 });
@@ -2750,7 +3034,8 @@
     // Update only the matching price cells in «تولیدات»; never touch layout/style/page setup.
     const customPrices = {};
     customPrices[catalogProduct.productionRow] = unitPrice * 10;
-    if (hasShipping) customPrices[27] = HOURNO_SMART.prices.shipping * 10;
+    const shippingToman = parsed?.shipping || (hasShipping ? HOURNO_SMART.prices.shipping : 0);
+    if (hasShipping) customPrices[27] = Math.round(shippingToman * 10);
 
     const orderData = {
       orderNumber: orderNum,
@@ -2759,10 +3044,19 @@
       date,
       items,
       payments,
-      customPrices
+      customPrices,
+      shippingToman,
+      // فقط برای اضافه‌شدن تصویر رسید به فایل Excel؛ سایر منطق بدون تغییر می‌ماند.
+      receiptImage: currentUploadedReceiptBase64 || ord?.receiptImage || ''
     };
 
     await generateAndDownloadForm106Official(orderData);
+    if (ord) {
+      if (rawInvoice) ord.invoiceText = rawInvoice;
+      if (rawReceipt) ord.receiptText = rawReceipt;
+      try { localStorage.setItem('hourno_orders_dashboard_data', JSON.stringify(orders)); } catch (_) {}
+      if (typeof syncOrderToFirebase === 'function') { try { syncOrderToFirebase(ord); } catch (_) {} }
+    }
     window.__HOURNO_RECEIPT_IMAGE_NEW = false;
   }
 
