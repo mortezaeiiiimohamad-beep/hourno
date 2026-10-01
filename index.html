@@ -2178,7 +2178,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       return defaultSmartProduct;
     }
 
-    function pushItem(catalog, smart, w, h, unit, lineSubtotal, sourceLine, skyMeta) {
+    function pushItem(catalog, smart, w, h, unit, lineSubtotal, sourceLine, skyMeta, lineIndex) {
       if (!catalog || !smart || !unit || !Number.isFinite(unit) || unit <= 0) return;
       let ww = Math.round(Number(w) || 0);
       let hh = Math.round(Number(h) || 0);
@@ -2200,7 +2200,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         unitPrice: Math.round(unit),
         discountPct,
         lineSubtotal: Math.round(Number(lineSubtotal) || 0),
-        sourceLine: sourceLine || ''
+        sourceLine: sourceLine || '',
+        lineIndex: lineIndex
       };
       if (skyMeta) {
         item.tx = skyMeta.tx;
@@ -2232,7 +2233,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     }
 
     // 1) Standard poster / shid / stretch lines: W × H × unit = subtotal
-    for (const line of lines) {
+    for (const [lineIndex, line] of lines.entries()) {
       if (/^(?:جمع|تخفیف|هزینه\s*حمل|جمع\s*کل|با\s*سپاس|سازه\s*:)/i.test(line)) continue;
       const m = line.match(/(\d+(?:\.\d+)?)\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*[×xX*]\s*([0-9][0-9,،.\s]*)\s*=\s*([0-9][0-9,،.\s]*)/i);
       if (!m) continue;
@@ -2243,11 +2244,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const smart = smartProductFromCatalog(catalog, line);
       const unit = hournoNormalizeMoneyToken(m[3]);
       const subtotal = hournoNormalizeMoneyToken(m[4]);
-      pushItem(catalog, smart, w, h, unit, subtotal, line);
+      pushItem(catalog, smart, w, h, unit, subtotal, line, null, lineIndex);
     }
 
     // 2) Sky lines: W×H = T tiles × unit = subtotal
-    for (const line of lines) {
+    for (const [lineIndex, line] of lines.entries()) {
       if (/تایل/.test(line) && !/^(?:جمع|تخفیف|هزینه\s*حمل|جمع\s*کل)/i.test(line)) {
         const m = line.match(/(\d+(?:\.\d+)?)\s*[×xX*]\s*(\d+(?:\.\d+)?)\s*=\s*(\d+)\s*تایل\s*[×xX*]\s*([0-9][0-9,،.\s]*)\s*=\s*([0-9][0-9,،.\s]*)/i);
         if (!m) continue;
@@ -2258,12 +2259,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const subtotal = hournoNormalizeMoneyToken(m[5]);
         const catalog = productFromLine(line) || HOURNO_EXCEL_CATALOG[/4\s*(?:میل|میلی|mm)/.test(line) ? 'تایل چهار میل' : 'تایل دو میل'];
         const smart = {type:'sky', name:catalog?.name || 'آسمان مجازی', kind:'', thickness: /4\s*(?:میل|میلی|mm)/.test(line) ? 4 : 2};
-        pushItem(catalog, smart, tx * 60, ty * 60, unit, subtotal, line, {tx, ty, tiles});
+        pushItem(catalog, smart, tx * 60, ty * 60, unit, subtotal, line, {tx, ty, tiles}, lineIndex);
       }
     }
 
     // 3) Zebra single/double: width × unit = subtotal
-    for (const line of lines) {
+    for (const [lineIndex, line] of lines.entries()) {
       if (/^(?:جمع|تخفیف|هزینه\s*حمل|جمع\s*کل|سازه\s*:)/i.test(line) || /تایل/.test(line)) continue;
       const m = line.match(/(\d+(?:\.\d+)?)\s*[×xX*]\s*([0-9][0-9,،.\s]*)\s*=\s*([0-9][0-9,،.\s]*)/i);
       if (!m) continue;
@@ -2274,14 +2275,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       if (w <= 10) w *= 100;
       const unit = hournoNormalizeMoneyToken(m[2]);
       const subtotal = hournoNormalizeMoneyToken(m[3]);
-      pushItem(catalog, smart, w, 200, unit, subtotal, line);
+      pushItem(catalog, smart, w, 200, unit, subtotal, line, null, lineIndex);
     }
 
     // De-duplicate accidental matches caused by lines that match more than one pattern.
     const uniqueItems = [];
     const seen = new Set();
     for (const it of items) {
-      const key = [it.sourceLine, it.code, it.width, it.height, it.unitPrice].join('|');
+      const key = [it.lineIndex, it.code, it.width, it.height, it.unitPrice].join('|');
       if (seen.has(key)) continue;
       seen.add(key);
       uniqueItems.push(it);
@@ -2508,8 +2509,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const m = t.match(/(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/i);
       if (!m) return null;
       let w = +m[1], h = +m[2];
+      const rawW = w, rawH = h;
       if (w <= 10 && h <= 10) { w *= 100; h *= 100; }
-      return {w, h};
+      return {w, h, rawW, rawH};
     },
 
     discount(raw) {
@@ -2578,7 +2580,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         const item = { type:p.type, kind:p.kind||'', product:p.name, w, h };
 
         if (p.type === 'sky') {
-          const tx=Math.ceil(w/60), ty=Math.ceil(h/60), tiles=tx*ty;
+          const tx = d.rawW <= 20 ? Math.max(1, Math.round(d.rawW)) : Math.ceil(d.rawW / 60);
+          const ty = d.rawH <= 20 ? Math.max(1, Math.round(d.rawH)) : Math.ceil(d.rawH / 60);
+          const tiles = tx * ty;
           const unit=this.prices.sky[String(p.thickness)];
           const sub=tiles*unit;
           Object.assign(item,{tx,ty,tiles,unit,qty:tiles,sub});
@@ -2625,7 +2629,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       const factor=consumer?1.30:1;
 
       if (p.type==='sky') {
-        const tx=Math.ceil(w/60), ty=Math.ceil(h/60), tiles=tx*ty;
+        const tx = d.rawW <= 20 ? Math.max(1, Math.round(d.rawW)) : Math.ceil(d.rawW / 60);
+        const ty = d.rawH <= 20 ? Math.max(1, Math.round(d.rawH)) : Math.ceil(d.rawH / 60);
+        const tiles = tx * ty;
         const unit=this.prices.sky[String(p.thickness)], sub=tiles*unit;
         const da=Math.round(sub*disc/100), total=sub-da+ship;
         return {type:'sky',product:p.name,w,h,unit,sub,da,ship,total,tiles,tx,ty};
@@ -2679,7 +2685,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     }
   }
 
-  async function saveModalOrder() {
+  function saveModalOrder() {
     if (activeIndex < 0) return;
     const ord = orders[activeIndex];
     ord.customer = (document.getElementById('mCustName')?.value || '').trim();
@@ -2753,11 +2759,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
     ensureOrderId(ord);
     saveAndRefresh();
-    try {
-      await syncOrderToFirebase(ord);
-    } catch (e) {
-      console.warn('HOURNO modal sync failed after save:', e);
-    }
+    syncOrderToFirebase(ord);
     closeInvoiceModal();
   }
 
@@ -3733,27 +3735,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 </script>
 <script>
   // ============================================================
-  // HOURNO CLOUD SYNC v5 - STABLE BIDIRECTIONAL SYNC
+  // HOURNO CLOUD SYNC v4 - FAST / NO REVERT
   // - One Firebase child per order
-  // - CONTINUOUS realtime listener (not one-shot)
-  // - Local changes are pushed per-order; remote changes merge by updatedAt
-  // - Reconnects automatically continue receiving updates
-  // - Offline/local-only orders are pushed when Firebase comes back
-  // - Does not rewrite the whole collection during normal operation
+  // - One-time initial read, then child-level realtime events
+  // - Local UI is immediate; stale cloud snapshots are ignored while writing
+  // - Per-order queue keeps rapid edits in order
+  // - No full-table onValue render after every change
   // ============================================================
 
+  let HOURNO_FIREBASE_FIRST_SNAPSHOT = true;
   let HOURNO_FIREBASE_READY = false;
   let HOURNO_FIREBASE_LISTENER_STARTED = false;
-  let HOURNO_FIREBASE_UNSUB = null;
-  let HOURNO_FIREBASE_CONNECTED_UNSUB = null;
-  let HOURNO_FIREBASE_AUTH_UNSUB = null;
-  let HOURNO_FIREBASE_LAST_CLOUD_IDS = new Set();
-  let HOURNO_FIREBASE_INITIALIZED_ONCE = false;
-  window.HOURNO_FIREBASE_READY = false;
-  window.HOURNO_FIREBASE_CONNECTED = false;
   const HOURNO_PENDING_WRITES = new Set();
   const HOURNO_PENDING_DELETES = new Set();
   const HOURNO_WRITE_QUEUES = new Map();
+  let HOURNO_CHILD_LISTENERS_STARTED = false;
 
   function ensureOrderId(order) {
     if (!order) return '';
@@ -3761,9 +3757,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       order.id = String(order.id);
       return order.id;
     }
-    const fallback = (window.crypto && typeof crypto.randomUUID === 'function')
-      ? crypto.randomUUID()
-      : (Date.now() + '_' + Math.random().toString(36).slice(2));
+    const fallback =
+      (window.crypto && typeof crypto.randomUUID === 'function')
+        ? crypto.randomUUID()
+        : (Date.now() + '_' + Math.random().toString(36).slice(2));
     order.id = 'order_' + fallback;
     return order.id;
   }
@@ -3792,9 +3789,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     return order.updatedAt;
   }
 
-  function renderAfterCloudSync() {
-    persistHournoLocalCache(false);
-    scheduleHournoUIRefresh();
+  function chooseNewerOrder(localOrder, cloudOrder) {
+    if (!localOrder) return cloudOrder;
+    if (!cloudOrder) return localOrder;
+    const lt = orderUpdatedAt(localOrder);
+    const ct = orderUpdatedAt(cloudOrder);
+    if (lt > ct) return localOrder;
+    if (ct > lt) return cloudOrder;
+    return cloudOrder;
+  }
+
+  function findOrderIndexById(id) {
+    id = String(id ?? '');
+    return orders.findIndex(o => String(o?.id ?? '') === id);
   }
 
   function cloudDataEqualsLocal(localOrder, cloudOrder) {
@@ -3806,19 +3813,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     }
   }
 
-  function findOrderIndexById(id) {
-    id = String(id ?? '');
-    return orders.findIndex(o => String(o?.id ?? '') === id);
-  }
-
-  function chooseNewerOrder(localOrder, cloudOrder) {
-    if (!localOrder) return cloudOrder;
-    if (!cloudOrder) return localOrder;
-    const lt = orderUpdatedAt(localOrder);
-    const ct = orderUpdatedAt(cloudOrder);
-    if (lt > ct) return localOrder;
-    if (ct > lt) return cloudOrder;
-    return cloudOrder;
+  function renderAfterCloudSync() {
+    persistHournoLocalCache(false);
+    scheduleHournoUIRefresh();
   }
 
   function enqueueOrderWrite(id, taskFactory) {
@@ -3834,55 +3831,48 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     return queued;
   }
 
-  async function waitForHournoFirebaseReady(timeoutMs = 15000) {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      if (window.hournoAuthUser && window.firebaseInitialized && window.database && HOURNO_FIREBASE_READY) return true;
-      await new Promise(resolve => setTimeout(resolve, 150));
-    }
-    return !!(window.hournoAuthUser && window.firebaseInitialized && window.database && HOURNO_FIREBASE_READY);
-  }
-
   async function syncOrderToFirebase(order) {
     if (!order) return false;
     const id = ensureOrderId(order);
     if (!id) return false;
+
+    // IMPORTANT: timestamp + pending marker happen BEFORE the async write.
+    // This prevents a stale realtime event from reverting a just-clicked change.
     touchOrder(order);
 
     return enqueueOrderWrite(id, async () => {
       try {
-        const ready = await waitForHournoFirebaseReady(15000);
-        if (!ready) {
-          console.warn('HOURNO Firebase write deferred; sync will retry on reconnect.', id);
-          return false;
-        }
+        if (!window.hournoAuthUser) return false;
+        if (!window.firebaseInitialized || !window.database) return false;
+
         const localOrder = orders.find(o => String(o?.id) === id);
         const target = localOrder || order;
         ensureOrderId(target);
-        await window.dbSet(getFirebaseOrderRef(id), cleanOrderForFirebase(target));
+        const snapshot = cleanOrderForFirebase(target);
+        await window.dbSet(getFirebaseOrderRef(id), snapshot);
         return true;
       } catch (e) {
         console.error('HOURNO Firebase write failed:', e);
+        alert('ذخیره ابری هورنو انجام نشد.\n\n' + (e?.message || e));
         return false;
       }
     });
   }
 
   async function syncOrderPatchToFirebase(order, patch) {
-    if (!order || !patch || typeof patch !== 'object') return false;
+    if (!order) return false;
     const id = ensureOrderId(order);
-    if (!id) return false;
+    if (!id || !patch || typeof patch !== 'object') return false;
+
+    // Mark pending immediately so the listener cannot bounce the UI backward.
     touchOrder(order);
 
     return enqueueOrderWrite(id, async () => {
       try {
-        const ready = await waitForHournoFirebaseReady(15000);
-        if (!ready) return false;
+        if (!window.hournoAuthUser || !window.firebaseInitialized || !window.database) return false;
         const localOrder = orders.find(o => String(o?.id) === id) || order;
-        await window.dbUpdate(getFirebaseOrderRef(id), {
-          ...patch,
-          updatedAt: orderUpdatedAt(localOrder)
-        });
+        const values = { ...patch, updatedAt: orderUpdatedAt(localOrder) };
+        await window.dbUpdate(getFirebaseOrderRef(id), values);
         return true;
       } catch (e) {
         console.error('HOURNO Firebase patch failed:', e);
@@ -3894,8 +3884,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
   async function syncDeleteOrderFromFirebase(orderId) {
     const id = String(orderId ?? '');
     if (!id) return false;
-    const ready = await waitForHournoFirebaseReady(15000);
-    if (!ready) return false;
+    if (!window.hournoAuthUser) {
+      alert('ابتدا با حساب HOURNO وارد شوید.');
+      return false;
+    }
+    if (!window.firebaseInitialized || !window.database) return false;
 
     HOURNO_PENDING_DELETES.add(id);
     try {
@@ -3903,6 +3896,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       return true;
     } catch (e) {
       console.error('HOURNO Firebase delete failed:', e);
+      alert('حذف ابری سفارش انجام نشد.\n\n' + (e?.message || e));
       return false;
     } finally {
       HOURNO_PENDING_DELETES.delete(id);
@@ -3911,123 +3905,121 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   async function replaceAllOrdersInFirebase() {
     try {
-      const ready = await waitForHournoFirebaseReady(15000);
-      if (!ready) {
-        alert('اتصال HOURNO به Firebase برقرار نیست.');
+      if (!window.hournoAuthUser) {
+        alert('ابتدا با حساب HOURNO وارد شوید.');
         return false;
       }
+      if (!window.firebaseInitialized || !window.database) return false;
       const ordersRef = window.dbRef(window.database, 'hourno_orders');
       const obj = {};
-      (Array.isArray(orders) ? orders : []).forEach(order => {
+      (Array.isArray(orders) ? orders : []).forEach((order) => {
         const id = ensureOrderId(order);
         touchOrder(order);
         obj[id] = cleanOrderForFirebase(order);
         HOURNO_PENDING_WRITES.add(id);
       });
       await window.dbSet(ordersRef, obj);
-      HOURNO_PENDING_WRITES.clear();
+      for (const order of orders) HOURNO_PENDING_WRITES.delete(String(order.id));
       HOURNO_FIREBASE_READY = true;
       renderAfterCloudSync();
       return true;
     } catch (e) {
-      HOURNO_PENDING_WRITES.clear();
       console.error('HOURNO Firebase full replace failed:', e);
+      for (const order of orders) HOURNO_PENDING_WRITES.delete(String(order.id));
       alert('همگام‌سازی کامل با Firebase انجام نشد.\n\n' + (e?.message || e));
       return false;
     }
   }
 
   async function uploadLocalDifferences(localList, cloudList) {
-    const localMap = new Map((Array.isArray(localList) ? localList : []).map(o => [String(ensureOrderId(o)), o]));
+    const localMap = new Map((Array.isArray(localList) ? localList : []).map(o => [String(o.id), o]));
     const cloudMap = new Map((Array.isArray(cloudList) ? cloudList : []).map(o => [String(o.id), o]));
     const tasks = [];
     for (const [id, localOrder] of localMap) {
       const cloudOrder = cloudMap.get(id);
-      if (!cloudOrder || orderUpdatedAt(localOrder) > orderUpdatedAt(cloudOrder)) {
+      if (!cloudOrder || chooseNewerOrder(localOrder, cloudOrder) === localOrder) {
         tasks.push(syncOrderToFirebase(localOrder));
       }
     }
-    if (tasks.length) await Promise.allSettled(tasks);
+    if (tasks.length) await Promise.all(tasks);
   }
 
-  function mergeRealtimeCloud(cloudOrders) {
-    const cloudMap = new Map((Array.isArray(cloudOrders) ? cloudOrders : []).map(o => [String(o.id), o]));
-    let changed = false;
+  function mergeInitialCloud(cloudList) {
+    const localMap = new Map((Array.isArray(orders) ? orders : []).map(o => [String(ensureOrderId(o)), o]));
+    const cloudMap = new Map((Array.isArray(cloudList) ? cloudList : []).map(o => [String(o.id), o]));
+    const merged = new Map();
 
-    // Add/update cloud orders.
     for (const [id, cloudOrder] of cloudMap) {
-      if (HOURNO_PENDING_DELETES.has(id)) continue;
-      const idx = findOrderIndexById(id);
-      if (idx < 0) {
-        orders.unshift(cloudOrder);
-        changed = true;
-        continue;
-      }
-      const localOrder = orders[idx];
-      const lt = orderUpdatedAt(localOrder);
-      const ct = orderUpdatedAt(cloudOrder);
-      if (HOURNO_PENDING_WRITES.has(id) && ct <= lt) continue;
-      if (ct > lt || (ct === lt && !cloudDataEqualsLocal(localOrder, cloudOrder))) {
-        orders[idx] = cloudOrder;
-        changed = true;
-      }
+      const localOrder = localMap.get(id);
+      merged.set(id, chooseNewerOrder(localOrder, cloudOrder));
     }
-
-    // Reflect remote deletions, but never delete an item that is currently being written/deleted locally.
-    if (HOURNO_FIREBASE_INITIALIZED_ONCE) {
-      for (const oldId of HOURNO_FIREBASE_LAST_CLOUD_IDS) {
-        if (cloudMap.has(oldId) || HOURNO_PENDING_WRITES.has(oldId) || HOURNO_PENDING_DELETES.has(oldId)) continue;
-        const idx = findOrderIndexById(oldId);
-        if (idx >= 0) {
-          orders.splice(idx, 1);
-          changed = true;
-        }
-      }
+    for (const [id, localOrder] of localMap) {
+      if (!cloudMap.has(id)) merged.set(id, localOrder);
     }
-
-    HOURNO_FIREBASE_LAST_CLOUD_IDS = new Set(cloudMap.keys());
-    if (changed) renderAfterCloudSync();
-    return changed;
+    return Array.from(merged.values());
   }
 
-  function detachFirebaseSync() {
-    if (typeof HOURNO_FIREBASE_CONNECTED_UNSUB === 'function') {
-      try { HOURNO_FIREBASE_CONNECTED_UNSUB(); } catch (_) {}
+  function applyCloudChild(id, data) {
+    id = String(id ?? '');
+    if (!id || !data) return;
+    if (HOURNO_PENDING_DELETES.has(id) || HOURNO_PENDING_WRITES.has(id)) return;
+
+    const cloudOrder = { ...data, id };
+    const idx = findOrderIndexById(id);
+
+    if (idx < 0) {
+      orders.unshift(cloudOrder);
+      renderAfterCloudSync();
+      return;
     }
-    HOURNO_FIREBASE_CONNECTED_UNSUB = null;
-    if (typeof HOURNO_FIREBASE_UNSUB === 'function') {
-      try { HOURNO_FIREBASE_UNSUB(); } catch (_) {}
-    }
-    HOURNO_FIREBASE_UNSUB = null;
-    HOURNO_FIREBASE_LISTENER_STARTED = false;
-    HOURNO_FIREBASE_READY = false;
-    HOURNO_FIREBASE_LAST_CLOUD_IDS = new Set();
-    HOURNO_FIREBASE_INITIALIZED_ONCE = false;
-    window.HOURNO_FIREBASE_READY = false;
-    window.HOURNO_FIREBASE_CONNECTED = false;
+
+    const localOrder = orders[idx];
+    const chosen = chooseNewerOrder(localOrder, cloudOrder);
+    if (chosen === localOrder || cloudDataEqualsLocal(localOrder, cloudOrder)) return;
+
+    orders[idx] = chosen;
+    renderAfterCloudSync();
+  }
+
+  function removeCloudChild(id) {
+    id = String(id ?? '');
+    if (!id || HOURNO_PENDING_WRITES.has(id) || HOURNO_PENDING_DELETES.has(id)) return;
+    const idx = findOrderIndexById(id);
+    if (idx < 0) return;
+    orders.splice(idx, 1);
+    renderAfterCloudSync();
+  }
+
+  function startChildRealtimeListeners(ordersRef) {
+    if (HOURNO_CHILD_LISTENERS_STARTED) return;
+    HOURNO_CHILD_LISTENERS_STARTED = true;
+
+    window.dbOnChildAdded(ordersRef, (snap) => {
+      applyCloudChild(snap.key, snap.val());
+    });
+
+    window.dbOnChildChanged(ordersRef, (snap) => {
+      applyCloudChild(snap.key, snap.val());
+    });
+
+    window.dbOnChildRemoved(ordersRef, (snap) => {
+      removeCloudChild(snap.key);
+    });
   }
 
   async function initFirebaseSync() {
-    if (!window.hournoAuthUser) return false;
+    if (HOURNO_FIREBASE_LISTENER_STARTED) return;
+    if (!window.hournoAuthUser) return;
     if (!window.firebaseInitialized || !window.database) {
-      setTimeout(() => { try { initFirebaseSync(); } catch (_) {} }, 500);
-      return false;
+      setTimeout(initFirebaseSync, 300);
+      return;
     }
-    if (HOURNO_FIREBASE_LISTENER_STARTED && HOURNO_FIREBASE_UNSUB) return true;
 
     HOURNO_FIREBASE_LISTENER_STARTED = true;
     const ordersRef = window.dbRef(window.database, 'hourno_orders');
 
-    // Network-level connection monitor. This does not replace the order listener.
-    const connectedRef = window.dbRef(window.database, '.info/connected');
-    if (!HOURNO_FIREBASE_CONNECTED_UNSUB) {
-      HOURNO_FIREBASE_CONNECTED_UNSUB = window.dbOnValue(connectedRef, (snap) => {
-        window.HOURNO_FIREBASE_CONNECTED = snap.val() === true;
-        if (window.HOURNO_FIREBASE_CONNECTED) setTimeout(() => { hournoResyncLocalDifferences(); }, 250);
-      });
-    }
-
-    HOURNO_FIREBASE_UNSUB = window.dbOnValue(
+    // Read the complete collection exactly once at startup.
+    window.dbOnValue(
       ordersRef,
       async (snapshot) => {
         try {
@@ -4036,83 +4028,44 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             ? Object.keys(data).map(key => ({ ...data[key], id: key }))
             : [];
 
-          mergeRealtimeCloud(cloudOrders);
+          orders = mergeInitialCloud(cloudOrders);
           HOURNO_FIREBASE_READY = true;
-          window.HOURNO_FIREBASE_READY = true;
-          HOURNO_FIREBASE_INITIALIZED_ONCE = true;
+          renderAfterCloudSync();
 
-          // Push local-only or newer orders after every cloud snapshot.
+          // Upload only local-only/newer records. Never replace the whole DB here.
           await uploadLocalDifferences(orders, cloudOrders);
+          startChildRealtimeListeners(ordersRef);
         } catch (e) {
-          console.error('HOURNO Firebase realtime merge failed:', e);
+          console.error('HOURNO Firebase initial sync failed:', e);
         }
       },
       (error) => {
+        console.error('HOURNO Firebase read failed:', error);
         HOURNO_FIREBASE_READY = false;
-        window.HOURNO_FIREBASE_READY = false;
-        console.error('HOURNO Firebase realtime listener failed:', error);
-      }
+        alert('خواندن سفارش‌های ابری هورنو انجام نشد.\n\n' + (error?.message || error));
+      },
+      { onlyOnce: true }
     );
 
-    console.log('HOURNO Firebase v5: continuous realtime sync active.');
-    return true;
+    console.log('HOURNO Firebase: fast realtime sync started.');
   }
 
   window.initFirebaseSync = initFirebaseSync;
-  window.hournoSyncOrderToFirebase = syncOrderToFirebase;
-  window.hournoSyncOrderPatchToFirebase = syncOrderPatchToFirebase;
-  window.hournoReplaceAllOrdersInFirebase = replaceAllOrdersInFirebase;
-
-  // Keep existing local persistence behavior, but never let it replace cloud data.
   window.saveAndRefresh = function() {
     persistHournoLocalCache(false);
-    if (typeof HOURNO_NATIVE_INVOKE !== 'undefined' && HOURNO_NATIVE_INVOKE &&
-        typeof HOURNO_NATIVE_READY !== 'undefined' && HOURNO_NATIVE_READY) {
+    if (
+      typeof HOURNO_NATIVE_INVOKE !== 'undefined' && HOURNO_NATIVE_INVOKE &&
+      typeof HOURNO_NATIVE_READY !== 'undefined' && HOURNO_NATIVE_READY
+    ) {
       HOURNO_NATIVE_INVOKE('save_hourno_database', { payload: JSON.stringify(orders) })
         .catch(e => console.warn('HOURNO SQLite save:', e));
     }
     scheduleHournoUIRefresh();
   };
 
-  async function hournoResyncLocalDifferences() {
-    if (!window.hournoAuthUser || !window.firebaseInitialized || !window.database) return;
-    if (!HOURNO_FIREBASE_READY) {
-      try { await initFirebaseSync(); } catch (_) {}
-      return;
-    }
-    try {
-      const snap = await new Promise((resolve, reject) => {
-        window.dbOnValue(window.dbRef(window.database, 'hourno_orders'), resolve, reject, { onlyOnce: true });
-      });
-      const data = snap?.val?.() || {};
-      const cloudOrders = Object.keys(data).map(key => ({ ...data[key], id: key }));
-      await uploadLocalDifferences(orders, cloudOrders);
-    } catch (e) {
-      console.warn('HOURNO reconnect resync skipped:', e);
-    }
-  }
-
-  window.addEventListener('online', () => {
-    setTimeout(() => { hournoResyncLocalDifferences(); }, 300);
-  });
-  document.addEventListener('visibilitychange', () => {
-    if (!document.hidden) setTimeout(() => { hournoResyncLocalDifferences(); }, 300);
-  });
-
-  // Re-start the sync cleanly when the Firebase auth session changes.
-  function wireHournoFirebaseAuthSync() {
-    if (HOURNO_FIREBASE_AUTH_UNSUB || !window.firebaseAuth || typeof window.firebaseAuth.onAuthStateChanged !== 'function') return;
-    HOURNO_FIREBASE_AUTH_UNSUB = window.firebaseAuth.onAuthStateChanged((user) => {
-      if (!user) {
-        detachFirebaseSync();
-        return;
-      }
-      setTimeout(() => { try { initFirebaseSync(); } catch (_) {} }, 0);
-    });
-  }
-
-  wireHournoFirebaseAuthSync();
-  if (window.hournoAuthUser) setTimeout(() => { try { initFirebaseSync(); } catch (_) {} }, 0);
+  window.hournoSyncOrderToFirebase = syncOrderToFirebase;
+  window.hournoSyncOrderPatchToFirebase = syncOrderPatchToFirebase;
+  window.hournoReplaceAllOrdersInFirebase = replaceAllOrdersInFirebase;
 </script>
 <!-- HOURNO FIX: invoice final total is authoritative for payment amount; robust unit-price extraction for all supported invoice formats. -->
 <!-- ===============================================================
